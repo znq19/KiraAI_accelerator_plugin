@@ -42,17 +42,25 @@ body{
 /* ── 背景层：可轮换动漫壁纸（可在配置里关掉） ── */
 .wallpaper{position:fixed;inset:0;z-index:0;pointer-events:none;background:#0a0b12;
   transform-origin:50% 45%;
-  animation:wpBreath 19s ease-in-out infinite}
+  animation:wpBreath 22s ease-in-out infinite}
 /* 伪 live2D 的"呼吸"：极缓慢的缩放，让画面不像一张死图 */
 @keyframes wpBreath{
-  0%,100%{transform:scale(1.025)}
-  50%{transform:scale(1.055)}
+  0%,100%{transform:scale(1.04)}
+  50%{transform:scale(1.10)}
 }
-.wp-layer{position:absolute;inset:0;background-size:cover;background-position:center;
-  opacity:0;transition:opacity 1.6s ease-in-out;will-change:opacity}
-.wp-layer.on{opacity:1}
-/* 跟随鼠标的微位移：由 JS 写 inline transform（幅度约 ±16px，几乎察觉不到但"活"了） */
-.wp-layer{backface-visibility:hidden}
+/* ★ 分三层，各写各的 transform，互不覆盖：
+     .wp-stage → 漂移位移（JS 每帧写）
+     .wp-img   → 过渡特效（缩放/模糊/裁剪）
+   旧版把两者都写到**同一个 inline transform** 上，后写的赢，
+   所以"过渡动画"和"鼠标位移"经常有一个等于没生效。 */
+.wp-stage{position:absolute;inset:-3%;will-change:transform;backface-visibility:hidden}
+.wp-img{position:absolute;inset:0;background-size:cover;background-position:center;
+  opacity:0;will-change:transform,opacity,clip-path,filter}
+.wp-stage.on .wp-img{opacity:1}
+/* 条带特效的每一片（全尺寸 + 各自 clip-path 拼成整图） */
+.s-strip{position:absolute;inset:0;background-size:cover;background-position:center}
+/* 揭示边缘的光环：让"边界"看得见 —— 纯柔边遮罩看起来就只是淡入 */
+.wp-rim{position:absolute;inset:0;pointer-events:none;opacity:0}
 /* 待验证功能：置灰 + 徽标 */
 .sw.locked{opacity:.45;cursor:not-allowed;filter:grayscale(1)}
 .sw.locked input{cursor:not-allowed}
@@ -60,12 +68,17 @@ body{
   font-size:11px;letter-spacing:.4px;color:#ffd9a8;background:rgba(255,170,60,.16);
   border:1px solid rgba(255,170,60,.35);vertical-align:middle}
 /* 遮罩：既保证 UI 可读，又让壁纸透出来（不是把图盖死） */
+/* ★ 遮罩（头号问题）：旧版最深到 .92，壁纸几乎被盖死 —— 特效再花也看不出来。
+   新版整体减淡，只在顶部/底部保持深度保证文字可读，中间让画面透出来。 */
 .wp-scrim{position:absolute;inset:0;
   background:
-    linear-gradient(180deg, rgba(10,11,18,.92) 0%, rgba(10,11,18,.62) 12%,
-                            rgba(10,11,18,.40) 34%, rgba(10,11,18,.56) 70%,
-                            rgba(10,11,18,.88) 100%),
-    radial-gradient(130% 76% at 50% 44%, rgba(10,11,18,.06), rgba(10,11,18,.52) 82%)}
+    linear-gradient(180deg,
+      rgba(10,11,18,.80) 0%,
+      rgba(10,11,18,.34) 9%,
+      rgba(10,11,18,.20) 30%,
+      rgba(10,11,18,.30) 64%,
+      rgba(10,11,18,.72) 100%),
+    radial-gradient(128% 74% at 50% 46%, rgba(10,11,18,0), rgba(10,11,18,.30) 86%)}
 body.no-wallpaper .wallpaper{display:none}
 
 /* ── 背景：极光 + 网格 ── */
@@ -274,14 +287,87 @@ select{appearance:none;background-image:none;cursor:pointer}
   .wallpaper{animation:none!important}
   .wordmark>span{opacity:1!important;transform:none!important}
   .card{opacity:1!important;transform:none!important}
+  .wp-img,.s-strip{transition:none!important;transform:none!important}
+  .wp-rim{display:none!important}
+  .splash{display:none!important}   /* 减少动效下不开屏，直接看内容 */
 }
+
+/* ═══ 开屏（splash）═══ */
+/* ★★ 默认不可见（display:none），只有 JS 明确加 .show 才显示。
+   为什么反过来写：若默认可见、靠 JS 去隐藏，那么只要 JS 有任何一步没跑到
+   （异常、动画 promise 不 resolve、定时器被节流、功能被关），开屏就会永久
+   挡住整个面板 —— 用户看到的是「面板打不开」，而不是「特效没生效」。
+   反过来写则最坏只是「没有开屏」，面板永远可用。 */
+.splash{position:fixed;inset:0;z-index:60;display:none;place-items:center;
+  background:#0a0b12;overflow:hidden;transition:opacity .8s ease-out}
+.splash.show{display:grid}
+.splash.out{opacity:0}
+.sp-wp{position:absolute;inset:-3%;background-size:cover;background-position:center;
+  will-change:transform,opacity,clip-path,filter}
+/* 面纱：只把**中间文字区**压暗，四角保留壁纸细节 ——
+   既要字能读，又要"这是一张图"的感觉还在。 */
+.sp-veil{position:absolute;inset:0;
+  background:
+    radial-gradient(58% 34% at 50% 50%, rgba(10,11,18,.62), rgba(10,11,18,0) 100%),
+    radial-gradient(120% 90% at 50% 50%, rgba(10,11,18,.34), rgba(10,11,18,.88) 92%)}
+.sp-rim{position:absolute;inset:0;pointer-events:none;opacity:0}
+.sp-inner{position:relative;text-align:center;padding:0 20px;max-width:92vw}
+.wm-wrap{position:relative;display:inline-block}
+.wm-main{font-family:NimbusDisplay,Helvetica,sans-serif;font-weight:800;
+  font-size:clamp(38px,11.5vw,84px);line-height:.9;letter-spacing:-.05em;white-space:nowrap;
+  text-shadow:0 2px 26px rgba(0,0,0,.72)}
+.wm-main .L{display:inline-block;will-change:transform,opacity,filter}
+.wm-main .o{background:linear-gradient(96deg,var(--pink),var(--violet) 46%,var(--mint));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.wm-main .e{-webkit-text-stroke:1.6px rgba(255,255,255,.55);color:transparent}
+.wm-main .sp{display:inline-block;width:.34em}
+.wm-sheen{position:absolute;top:-8%;bottom:-8%;width:26%;pointer-events:none;opacity:0;
+  background:linear-gradient(100deg,transparent,rgba(255,255,255,.42),transparent)}
+.wm-sub{margin-top:10px;font-size:clamp(11px,2.5vw,13.5px);letter-spacing:.42em;
+  text-transform:uppercase;color:rgba(255,255,255,.72);text-indent:.42em;
+  text-shadow:0 1px 12px rgba(0,0,0,.75)}
+.sp-line{width:0;height:1px;margin:18px auto 0;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.5),transparent)}
+.motto{margin-top:22px;font-size:clamp(12px,2.8vw,15px);letter-spacing:.02em;
+  color:rgba(255,255,255,.88);font-style:italic;min-height:1.6em;
+  text-shadow:0 1px 14px rgba(0,0,0,.8)}
+.motto::before{content:"— ";color:rgba(255,255,255,.35)}
+.sp-hint{position:absolute;bottom:20px;left:0;right:0;text-align:center;
+  font-size:11px;letter-spacing:.24em;color:rgba(255,255,255,.34);text-transform:uppercase}
 </style>
 </head>
 <body>
 <div class="wallpaper" id="wallpaper" aria-hidden="true">
-  <div class="wp-layer" id="wp-a"></div>
-  <div class="wp-layer" id="wp-b"></div>
+  <div class="wp-stage" id="wp-a"><div class="wp-img"></div></div>
+  <div class="wp-stage" id="wp-b"><div class="wp-img"></div></div>
   <div class="wp-scrim"></div>
+  <div class="wp-rim" id="wpRim"></div>
+</div>
+
+<!-- 墨渗特效用的"有机边缘"扰动（SVG 湍流 + 位移贴图） -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <filter id="wpInk" x="-20%" y="-20%" width="140%" height="140%">
+    <feTurbulence type="fractalNoise" baseFrequency="0.013" numOctaves="3" seed="9" result="n"/>
+    <feDisplacementMap in="SourceGraphic" in2="n" scale="46"
+                       xChannelSelector="R" yChannelSelector="G"/>
+  </filter>
+</svg>
+
+<!-- 开屏：随机壁纸 + 随机入场特效 + 随机英文名特效 + 随机箴言 -->
+<div class="splash" id="splash" role="presentation">
+  <div class="sp-wp" id="spWp"></div>
+  <div class="sp-veil"></div>
+  <div class="sp-rim" id="spRim"></div>
+  <div class="sp-inner">
+    <div class="wm-wrap">
+      <div class="wm-main" id="wmMain" aria-label="KIRA BOOST"></div>
+      <div class="wm-sheen" id="wmSheen"></div>
+    </div>
+    <div class="wm-sub">KiraAI Accelerator</div>
+    <div class="sp-line" id="spLine"></div>
+    <div class="motto" id="motto"></div>
+  </div>
+  <div class="sp-hint">点击任意处跳过</div>
 </div>
 
 <div class="aurora"><i class="a1"></i><i class="a2"></i><i class="a3"></i></div>
@@ -539,8 +625,9 @@ const PENDING_VERIFICATION = {
 // 不记住就会把用户弹回第一个页签「说明」——观感像页面被刷新了）
 let ACTIVE_SECTION = null;
 const FX_LABEL = {
-  ink: "晕染（墨渗）", ink_soft: "柔和晕染", burn: "燃开（焦痕）",
-  fade: "淡入淡出", none: "直接切换",
+  random: "随机（每次不同）", iris: "虹膜（圆形张开）", wipe: "斜擦（发光前沿横扫）",
+  blinds: "百叶（横向条带）", shutter: "中开（竖向板从中缝开）",
+  zoom: "推镜（镜头推进）", ink: "墨渗（不规则渗开）",
 };
 
 /* ═══ 渲染：实时指标 ═══ */
@@ -802,6 +889,9 @@ function buildForm(){
         ctl = makeControl(f, full, DRAFT[full], () => {
           if (fk === "wallpaper_enabled") wpEnabled = !!DRAFT[full];
           if (fk === "wallpaper_interval") wpIntervalS = Number(DRAFT[full]) || 0;
+          if (fk === "wallpaper_parallax") wpParallax = !!DRAFT[full];
+          if (fk === "wallpaper_splash") wpSplash = !!DRAFT[full];
+          if (fk === "wallpaper_splash_motto") wpSplashMotto = !!DRAFT[full];
           startWallpaperRotation();
           markDirty();
         });
@@ -930,163 +1020,356 @@ window.resetBreaker = resetBreaker;
 let WALLPAPERS = [];            // 全部可用壁纸（来自 API）
 let wpActive = [];              // 实际参与轮换的（配置筛选后）
 let wpIdx = 0, wpTimer = null, wpEnabled = true, wpIntervalS = 8;   // 默认 8 秒一张
-let wpEffect = "ink";           // ink | ink_soft | burn | fade | none
+let wpEffect = "random";        // random | iris | wipe | blinds | shutter | zoom | ink
 let wpPick = [];                // 用户在面板上勾选的壁纸（空 = 全部）
-let wpParallax = true;          // 跟随鼠标的轻微晃动（伪 live2D）
-let swayX = 0, swayY = 0;       // 当前位移（px）
-let wpCur = "wp-a", wpBusy = false;
+let wpParallax = true;          // 自动漂移 + 跟随鼠标（伪 live2D）
+let wpSplash = true;            // 进入页面时的开屏动画
+let wpSplashMotto = true;       // 开屏时显示英文箴言
+let wpCur = "wp-a", wpBusy = false;   // wpBusy = 切换互斥锁，结束必须释放
+let baseX = 0, baseY = 0;       // 自动漂移位移
+let aimX = 0, aimY = 0;         // 鼠标/触摸的目标位移
+let curX = 0, curY = 0;         // 鼠标位移的缓动当前值
+const WP_DUR = 2200;            // 过渡时长（旧版 1.8s 太快，人还没注意到就结束了）
 
 function wpUrl(name){ return PAPI + "/wallpapers/" + encodeURIComponent(name); }
 
-/* ═══ 伪 live2D：跟随鼠标的轻微晃动 ═══
-   容器另有一条极缓慢的"呼吸"缩放（CSS 的 wpBreath），两者叠加。
-   这里只做位移，且**方向与鼠标相反** —— 像透过窗户看一个有景深的场景。 */
+/* ═══ 伪 live2D：自动漂移 + 跟随鼠标 ═══
+   ★★ 旧版只监听 mousemove ⇒ **不移动鼠标就完全静止**，像一张死图，
+     这正是"晃动没感觉"的原因。
+   现在壁纸**持续自行漂移**（两个不成整数比的正弦叠加，轨迹很久才重复），
+   鼠标/手指移动时再叠一层反向位移（缓动逼近，松手自己滑回）。 */
 function applySway(){
-  const v = wpParallax ? "translate3d(" + swayX + "px," + swayY + "px,0)" : "";
+  const v = wpParallax
+    ? "translate3d(" + (baseX + curX).toFixed(2) + "px,"
+                    + (baseY + curY).toFixed(2) + "px,0)"
+    : "translate3d(0,0,0)";
   ["wp-a","wp-b"].forEach(id => {
-    const e = document.getElementById(id);
-    if (e) e.style.transform = v;
+    const el2 = document.getElementById(id);
+    if (el2) el2.style.transform = v;
   });
 }
 
-let parallaxBound = false;
+let wpT0 = performance.now();
+function wpTick(now){
+  /* ★ 容错：requestAnimationFrame 的回调**在部分环境不带时间戳**（测试垫片、
+     个别 WebView）。拿 undefined 参与运算会得到 NaN ⇒ 位移变成 "translate3d(NaNpx…)"
+     ⇒ 解析失败 ⇒ **画面彻底不漂移**（而控制台一片安静，极难排查）。 */
+  if (typeof now !== "number") now = performance.now();
+  const sec = (now - wpT0) / 1000;
+  if (wpParallax){
+    // 周期 11.3 / 4.7 / 13.7 / 6.1 秒 —— 互质感强，合起来很久才重复
+    baseX = Math.sin(sec / 11.3) * 22 + Math.sin(sec / 4.7) * 8;
+    baseY = Math.cos(sec / 13.7) * 17 + Math.sin(sec / 6.1) * 6;
+  } else { baseX = baseY = 0; }
+  curX += (aimX - curX) * 0.15;      // 缓动逼近（太小会显得"跟不动"）
+  curY += (aimY - curY) * 0.15;
+  applySway();
+  requestAnimationFrame(wpTick);
+}
+requestAnimationFrame(wpTick);
 
+let parallaxBound = false;
 function initParallax(){
-  // 开关在**事件里**实时判断（而不是注册时），这样：
-  //   · 面板里改开关、保存后立刻生效，不用刷新
-  //   · 监听只注册一次，不会因为重复调用而叠加
   applySway();
   if (parallaxBound) return;
   parallaxBound = true;
-
-  const RX = 16, RY = 11;          // 最大位移：够看出"活"，又不至于晃眼
-  window.addEventListener("mousemove", (ev)=>{
+  const RX = 34, RY = 24;        // 跟随幅度（旧版 16/11，几乎看不出来）
+  const follow = (x, y) => {
     if (!wpParallax) return;
-    // 归一化到 -1 ~ 1（视口中心为 0），再乘系数
-    const nx = (ev.clientX / window.innerWidth) * 2 - 1;
-    const ny = (ev.clientY / window.innerHeight) * 2 - 1;
-    swayX = Math.round(-nx * RX);
-    swayY = Math.round(-ny * RY);
-    applySway();
+    aimX = -((x / window.innerWidth) * 2 - 1) * RX;
+    aimY = -((y / window.innerHeight) * 2 - 1) * RY;
+    applySway();                  // 立即生效，不等下一帧（观感更跟手）
+  };
+  window.addEventListener("mousemove", e2 => follow(e2.clientX, e2.clientY), {passive:true});
+  window.addEventListener("touchmove", e2 => {
+    const p = e2.touches[0]; if (p) follow(p.clientX, p.clientY);
   }, {passive:true});
-  // 指针离开窗口 ⇒ 缓缓回中（transition 会平滑带回去）
-  window.addEventListener("mouseleave", ()=>{ swayX = 0; swayY = 0; applySway(); });
+  window.addEventListener("mouseleave", () => { aimX = 0; aimY = 0; });
 }
 
-/* 切换特效：把新图画进另一层，用遮罩/透明度把它"渗"出来 */
+/* ═══════════════════════════════════════════════════════════
+   壁纸过渡引擎
+   ═══════════════════════════════════════════════════════════
+   上一版"完全没效果"的三个原因（都在这里修掉）：
+     ① **遮罩太厚**（CSS 里已减淡）—— 图本身看不见，特效等于白做
+     ② 只动 opacity ⇒ 观感就是一次淡入；**没有可见的运动/边界**
+     ③ 时长的绝大部分耗在看不见的地方（强 ease-out + 终点远超所需尺寸）
+   现在：每套特效都有**硬边裁剪**（可数、可见）或**明确的运动**，
+        并配一圈发光"揭示边缘"，让"扫过/张开"这件事肉眼可见。
+   ═══════════════════════════════════════════════════════════ */
+
+/* 英文箴言：贴合本插件主题（提速 / 流式 / 按需思考 / 在场感） */
+const MOTTOES = [
+  "The first sentence should not wait for the last.",
+  "Speed is a feature, not a promise.",
+  "Think when it matters. Speak the moment you know.",
+  "Latency is a tax on thought.",
+  "Every token, the moment it exists.",
+  "Patience is a virtue. Waiting is not.",
+  "Fast where it counts, careful where it tells.",
+  "Stream, don't stall.",
+  "An answer delivered late is an answer doubted.",
+  "Presence is built one sentence at a time.",
+  "Say it as you think it.",
+  "The fastest reply is the one already on its way.",
+];
+
+const WP_EFFECTS = ["iris","wipe","blinds","shutter","zoom","ink"];
+const WM_FX     = ["assemble","glitch","neon","sweep","wave","shatter"];
+const MOTTO_FX  = ["rise","type","blur","track"];
+
+const rand  = a => a[Math.floor(Math.random() * a.length)];
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+const wpStage = id => document.getElementById(id);
+const wpImg   = id => wpStage(id).querySelector(".wp-img");
+const wpOther = () => (wpCur === "wp-a" ? "wp-b" : "wp-a");
+
+/* 取消一层上的全部动画。★ 必须容错：getAnimations() 在部分环境（旧 WebView、
+   测试用的最小 DOM 桩）并不存在，直接用会抛异常 —— 而异常会一路冒到
+   wpTransition 的兜底里，把一次正常切换变成"失败"。 */
+function wpCancelAnimations(el){
+  if (!el) return;
+  if (typeof el.getAnimations === "function"){
+    el.getAnimations({subtree:true}).forEach(a => { try{ a.cancel(); }catch(e){} });
+  }
+  el.querySelectorAll("*").forEach(n => {
+    if (typeof n.getAnimations === "function"){
+      n.getAnimations().forEach(a => { try{ a.cancel(); }catch(e){} });
+    }
+  });
+}
+
+/* 复位一层到"干净"状态：取消动画、去掉裁剪与滤镜、只留背景。 */
+function wpNormalize(id){
+  const st = wpStage(id);
+  wpCancelAnimations(st);
+  st.querySelectorAll(".s-strip").forEach(s => s.remove());
+  const im = wpImg(id);
+  const bg = im.style.backgroundImage, sz = im.style.backgroundSize,
+        pos = im.style.backgroundPosition;
+  im.style.cssText = "";
+  if (bg) im.style.backgroundImage = bg;      // 背景保留（要显示的那张）
+  im.style.backgroundSize = sz || "cover";
+  im.style.backgroundPosition = pos || "center";
+  im.style.opacity = "1";                     // 明确可见
+}
+
+/* 把新图装进目标层（先彻底复位，避免上一轮残留） */
+function wpLoad(id, url){
+  const st = wpStage(id);
+  wpCancelAnimations(st);
+  st.querySelectorAll(".s-strip").forEach(s => s.remove());
+  st.classList.remove("on");
+  const im = wpImg(id);
+  im.style.cssText = "";
+  im.style.backgroundImage = 'url("' + url + '")';
+  im.style.backgroundSize = "cover";
+  im.style.backgroundPosition = "center";
+  return im;
+}
+
+const anim = (el, kf, opt) => el.animate(kf, Object.assign(
+  {duration: WP_DUR, easing: "linear", fill: "forwards"}, opt));
+
+/* 复位"揭示光环"（每轮必须清干净，否则上一轮的宽度/背景会残留） */
+function wpRimReset(){
+  const rim = document.getElementById("wpRim");
+  if (!rim) return null;
+  wpCancelAnimations(rim);
+  rim.style.cssText = "";
+  rim.style.opacity = "0";
+  return rim;
+}
+
+/* ── 虹膜：硬边圆从随机位置张开 + 发光圆环追着边界跑 ──
+   ★ 半径终点要按几何算：circle(r%) 的 r 相对 √(w²+h²)/√2，而角落距离是
+     √(w²+h²)/2 ⇒ 比值 1/√2 ≈ .707，即 **r≈71% 就盖住四角**。
+     写 152% 会让"盖满"发生在进度 46%（≈时长 33%），后面 2/3 全白给。 */
+function fxIris(to, from, rim){
+  const cx = 22 + Math.random() * 56, cy = 22 + Math.random() * 56;
+  const a = `circle(0% at ${cx}% ${cy}%)`, b = `circle(118% at ${cx}% ${cy}%)`;
+  to.style.clipPath = a;
+  anim(to, [{clipPath:a},{clipPath:b}], {easing:"cubic-bezier(.32,0,.68,1)"});
+  anim(to, [{transform:"scale(1.14)"},{transform:"scale(1)"}],
+       {easing:"cubic-bezier(.16,1,.3,1)"});
+  if (rim){
+    rim.style.background = `radial-gradient(circle at ${cx}% ${cy}%, transparent 41%,`
+      + ` rgba(255,214,236,.95) 48%, rgba(255,111,174,.45) 54%, transparent 62%)`;
+    anim(rim, [{opacity:0, transform:"scale(.35)"},{opacity:1, offset:.35},
+               {opacity:1, offset:.62},{opacity:0, transform:"scale(2.5)"}],
+         {duration:WP_DUR*1.02, easing:"cubic-bezier(.32,0,.68,1)"});
+  }
+  anim(from, [{transform:"scale(1)", opacity:1},{transform:"scale(1.07)", opacity:0}],
+       {easing:"cubic-bezier(.5,0,.75,0)"});
+}
+
+/* ── 斜擦：一道发光前沿横扫 ── */
+function fxWipe(to, from, rim){
+  const ltr = Math.random() < .5;
+  const a = ltr ? "inset(0 100% 0 0)" : "inset(0 0 0 100%)";
+  to.style.clipPath = a;
+  anim(to, [{clipPath:a},{clipPath:"inset(0 0 0 0)"}],
+       {easing:"cubic-bezier(.66,0,.24,1)"});
+  anim(to, [{transform:"scale(1.05)"},{transform:"scale(1)"}]);
+  if (rim){
+    rim.style.background = "linear-gradient(90deg,transparent,rgba(255,214,236,.85) 42%,"
+      + "rgba(139,124,255,.55) 60%,transparent)";
+    rim.style.width = "16%";
+    const x0 = ltr ? "-4%" : "104%", x1 = ltr ? "104%" : "-4%";
+    anim(rim, [{opacity:0, transform:`translateX(${x0})`},{opacity:1, offset:.12},
+               {opacity:1, offset:.86},{opacity:0, transform:`translateX(${x1})`}],
+         {easing:"cubic-bezier(.66,0,.24,1)"});
+  }
+  anim(from, [{opacity:1},{opacity:0}]);
+}
+
+/* ── 条带揭示：百叶（横向）／中开（纵向） ──
+   把新图复制成 N 份**全尺寸**层，每份用 inset() 只露出自己那条带；
+   因为都是全尺寸 + background-size:cover，各带拼起来正好是完整一张图。
+   ★ 条带边界是硬边 ⇒ "扫开"的过程肉眼可见（这是与"纯淡入"最本质的区别）。 */
+function fxStrips(to, from, rim, vertical, fromCentre){
+  const host = to.parentElement;
+  const N = vertical ? 11 : 9;
+  const bg = to.style.backgroundImage;
+  const made = [];
+  to.style.opacity = "0";                  // 本体不显示，靠条带拼
+  for (let i = 0; i < N; i++){
+    const s = document.createElement("div");
+    s.className = "s-strip";
+    s.style.cssText = "background-image:" + bg;
+    const lo = i / N * 100, hi = (i + 1) / N * 100;
+    const fromClip = vertical
+      ? "inset(0 49.9% 0 49.9%)"                             // 零宽竖线（正中）
+      : "inset(" + lo + "% 0 " + (99.9 - lo) + "% 0)";       // 零高横线（该带顶）
+    const toClip = vertical
+      ? "inset(0 " + (100 - hi) + "% 0 " + lo + "%)"
+      : "inset(" + lo + "% 0 " + (100 - hi) + "% 0)";
+    s.style.clipPath = fromClip;
+    host.appendChild(s);
+    made.push(s);
+    const dist = fromCentre ? Math.abs(i - (N - 1) / 2) : i;
+    s.animate([{clipPath:fromClip},{clipPath:toClip}], {
+      duration: WP_DUR * .60, delay: dist * (WP_DUR * .34 / N),
+      easing: "cubic-bezier(.2,.9,.25,1)", fill: "forwards"});
+  }
+  anim(to, [{transform:"scale(1.09)"},{transform:"scale(1)"}],
+       {easing:"cubic-bezier(.16,1,.3,1)"});
+  anim(from, [{transform:"scale(1)", opacity:1},{transform:"scale(1.05)", opacity:0}]);
+  return () => made.forEach(s => s.remove());
+}
+
+/* ── 推镜：新图从近处拉回，旧图放大虚化退出（电影感最强） ── */
+function fxZoom(to, from){
+  anim(to, [{transform:"scale(1.25)", filter:"blur(9px) saturate(.7)", opacity:0},
+            {transform:"scale(1)", filter:"blur(0px) saturate(1)", opacity:1}],
+       {easing:"cubic-bezier(.16,1,.3,1)"});
+  anim(from, [{transform:"scale(1)", filter:"blur(0px)", opacity:1},
+              {transform:"scale(1.14)", filter:"blur(7px)", opacity:0}],
+       {easing:"cubic-bezier(.5,0,.75,0)"});
+}
+
+/* ── 墨渗：圆 + SVG 湍流扰动 ⇒ 边缘有机不规则（比纯圆更像墨） ── */
+function fxInk(to, from, rim){
+  const cx = 24 + Math.random() * 52, cy = 24 + Math.random() * 52;
+  const dur = WP_DUR * 1.12;
+  const a = `circle(0% at ${cx}% ${cy}%)`, b = `circle(116% at ${cx}% ${cy}%)`;
+  to.style.clipPath = a;
+  to.style.filter = "url(#wpInk)";
+  anim(to, [{clipPath:a},{clipPath:b}],
+       {duration:dur, easing:"cubic-bezier(.34,0,.66,1)"});
+  anim(to, [{transform:"scale(1.1)"},{transform:"scale(1)"}], {duration:dur});
+  if (rim){
+    rim.style.background = `radial-gradient(circle at ${cx}% ${cy}%, transparent 40%,`
+      + ` rgba(255,226,244,.9) 47%, rgba(139,124,255,.42) 55%, transparent 64%)`;
+    anim(rim, [{opacity:0, transform:"scale(.4)"},{opacity:1, offset:.4},
+               {opacity:1, offset:.66},{opacity:0, transform:"scale(2.6)"}],
+         {duration:dur, easing:"cubic-bezier(.34,0,.66,1)"});
+  }
+  anim(from, [{opacity:1},{opacity:0}], {duration:dur});
+  return () => { to.style.filter = ""; };
+}
+
+let wpCleanup = null;
+let wpPendingRestart = false;   // 切换进行中被要求重排时，先记下来
+
+/* 切换入口（带锁 + 异常兜底）
+   ★★ 必须包 try/catch：异常会让 wpBusy 永久停在 true ⇒ 之后每次切换都在
+     第一行 return ⇒ **轮换静默死掉**（无报错，只是图永远不换）。 */
 function wpTransition(url){
   if (wpBusy) return;
   wpBusy = true;
-  // ★ 兜底：切换过程中任何异常都必须把锁放掉。
-  //   否则 wpBusy 永久为 true ⇒ 之后每次调用都在第一行 return
-  //   ⇒ **轮换静默死掉**（没有任何报错，只是图永远不换）。
-  try {
-    _wpTransition(url);
-  } catch (e) {
+  _wpTransition(url).catch(e => {
     console.error("[accel] 壁纸切换失败，已释放锁", e);
+    try { wpSettle(wpOther(), wpCur); } catch (_) {}
     wpBusy = false;
-  }
-}
-
-function _wpTransition(url){
-  const a = $("#" + wpCur);
-  const b = $("#" + (wpCur === "wp-a" ? "wp-b" : "wp-a"));
-  const dur = wpEffect === "none" ? 0 : (wpEffect === "fade" ? 1500 : 1800);
-
-  // 复位目标层
-  b.className = "wp-layer";
-  b.style.cssText = "";            // ⚠️ 这会清掉 inline transform，稍后要重贴
-  b.style.backgroundImage = 'url("' + url + '")';
-  b.style.backgroundSize = "cover";
-  b.style.backgroundPosition = "center";
-
-  const done = () => {
-    a.classList.remove("on");
-    a.style.cssText = "";          // 会清掉 inline transform
-    applySway();                   // ⇒ 立刻补回，保证两层位移一致
-    wpCur = b.id;
-    wpBusy = false;
-  };
-
-  if (wpEffect === "none"){
-    b.classList.add("on");
-    setTimeout(done, 30);
-    return;
-  }
-
-  if (wpEffect === "fade"){
-    b.style.transition = "opacity " + (dur/1000) + "s ease-in-out";
-    requestAnimationFrame(()=> b.classList.add("on"));
-    setTimeout(done, dur + 120);
-    return;
-  }
-
-  // 晕染 / 燃开：radial-gradient 遮罩**由小长到大**
-  //
-  // ⚠️ 这里踩过两个坑，合起来导致"特效等于没有"：
-  //   ① mask-size 只被赋值一次（230%）⇒ 声明了 `transition: mask-size` 也
-  //      **没有起点可过渡**，动画根本不存在。
-  //   ② 在几个不同的 radial-gradient 之间切换 mask-image ⇒ 浏览器**无法插值
-  //      两个不同的渐变**，是瞬间跳变。
-  //   现在：只用一个渐变，靠 mask-size 从 0% 长到铺满来"渗"出来。
-  const soft = wpEffect === "ink_soft";
-  const burn = wpEffect === "burn";
-  // ★ 缓动必须是**接近线性**的。
-  //   之前用 cubic-bezier(.22,.61,.24,1)（强 ease-out）：t=0.2 时进度已 ≈0.55，
-  //   而 16:9 元素的对角半径只有 0.57×宽 —— mask 在 **0.5 秒内就把整个画面盖满**，
-  //   剩下 1.3 秒全在调画面外看不见的柔边 ⇒ 看起来就是一次普通淡入，没有"墨渗"感。
-  //   线性之后，"扩散的小圆"在整个时长里都看得见。
-  const ease = "linear";
-
-  b.style.transition =
-    "opacity .55s ease-out, " +
-    "transform .9s cubic-bezier(.2,.7,.3,1), " +
-    "mask-size " + dur + "ms " + ease + ", " +
-    "-webkit-mask-size " + dur + "ms " + ease + ", " +
-    "filter " + dur + "ms ease-out";
-  b.style.filter = burn ? "blur(5px) sepia(.45) saturate(1.5) brightness(1.18)"
-                        : (soft ? "blur(6px) saturate(.85)" : "blur(10px) saturate(.7)");
-
-  // ★ 每次随机一个晕染中心（不是固定正中）—— 像墨滴落在纸上的不同位置
-  //   ⚠️ 变量先算数值，最后一步才 toFixed：toFixed 的结果是**字符串**，
-  //      拿去参与算术会变成拼接，字符串上也没有 .toFixed。
-  const cxN = 18 + Math.random() * 64;              // 18% ~ 82%
-  const cyN = 18 + Math.random() * 64;
-  const cx = cxN.toFixed(1), cy = cyN.toFixed(1);
-
-  // 硬核心 + 一圈柔边（墨滴的边界感），柔边不占太宽，否则"盖满"来得太早
-  const g = "radial-gradient(circle, #000 0%, #000 62%, rgba(0,0,0,.6) 80%, transparent 94%)";
-  b.style.maskImage = g;
-  b.style.webkitMaskImage = g;
-  b.style.maskRepeat = "no-repeat";
-  b.style.webkitMaskRepeat = "no-repeat";
-  b.style.maskPosition = cx + "% " + cy + "%";
-  b.style.webkitMaskPosition = cx + "% " + cy + "%";
-  // ★ 起点：0% —— 这就是那条 transition 需要的东西
-  b.style.maskSize = "0% 0%";
-  b.style.webkitMaskSize = "0% 0%";
-
-  // ★★ 强制一次样式计算，让上面的"起点值"真正落地。
-  //   不这么做的话：起点（0%）与终点（320%）会被浏览器**合并成同一次样式
-  //   计算**，它就看不到"从 A 变到 B"，于是不产生过渡、直接跳到终值 ——
-  //   实测 `getAnimations()` 里只有 filter 有过渡，opacity 与 mask-size 都没有。
-  //   读一次 offsetWidth 是最省的强制重排手段。
-  void b.offsetWidth;
-
-  requestAnimationFrame(()=>{
-    b.classList.add("on");
-    // ★ 终点收到 240%：四角在这个尺寸下刚好被不透明核心盖住并留一点余量。
-    //   之前写 320% 是"远超容器"—— 结果在动画早期就已经盖满，白给。
-    b.style.maskSize = "240% 240%";
-    b.style.webkitMaskSize = "240% 240%";
-    b.style.filter = burn ? "blur(0px) sepia(0) saturate(1) brightness(1)"
-                          : "blur(0px) saturate(1)";
   });
-  setTimeout(done, dur + 350);
 }
 
+async function _wpTransition(url){
+  const id = wpOther(), fromId = wpCur;
+  const to = wpLoad(id, url), from = wpImg(fromId);
+  const rim = wpRimReset();
+
+  // 选定特效：配置指定则用它；random 或未配置则每次随机（且不与上次重复）
+  let fx = (wpEffect && wpEffect !== "random" && WP_EFFECTS.includes(wpEffect))
+    ? wpEffect : rand(WP_EFFECTS);
+  if (!wpEffect || wpEffect === "random"){
+    if (fx === _wpLastFx) fx = rand(WP_EFFECTS);
+  }
+  _wpLastFx = fx;
+
+  wpCleanup = null;
+  if (fx === "iris")         fxIris(to, from, rim);
+  else if (fx === "wipe")    fxWipe(to, from, rim);
+  else if (fx === "blinds")  wpCleanup = fxStrips(to, from, rim, false, false);
+  else if (fx === "shutter") wpCleanup = fxStrips(to, from, rim, true, true);
+  else if (fx === "zoom")    fxZoom(to, from);
+  else                       wpCleanup = fxInk(to, from, rim);
+
+  wpStage(id).classList.add("on");
+  await sleep(WP_DUR + 420);
+  wpSettle(id, fromId);
+}
+
+/* 收尾：两层都归一化。★ 只清新层不清旧层的话，**新层**上残留的
+   clip-path / opacity:0 / filter 会把新壁纸永久藏起来 —— 表现为
+   "切完之后背景全黑"，而人只会以为"特效没效果"。 */
+function wpSettle(id, fromId){
+  /* ★★ 清理（移除条带）单独包一层：它一旦抛异常，**绝不能连累后面的状态更新**。
+     否则 wpCur 不推进、锁不释放 ⇒ 轮换静默死掉 —— 而失败的只是"移除几个
+     已经看不见的条带元素"这种无关紧要的事。状态正确性优先于清理干净。 */
+  try {
+    if (wpCleanup){ wpCleanup(); }
+  } catch (e) {
+    console.warn("[accel] 清理临时元素失败（不影响切换）", e);
+  } finally {
+    wpCleanup = null;
+  }
+  try { wpNormalize(fromId); } catch (e) { console.warn("[accel] 归一化旧层失败", e); }
+  try { wpNormalize(id); }     catch (e) { console.warn("[accel] 归一化新层失败", e); }
+  wpStage(fromId).classList.remove("on");
+  /* ★ 兜底：收尾后**当前层必须可见**。上面任何一步被打断（例如别处并发调用
+     wpLoad 清掉了 .on），这里也能把画面救回来 —— 让"背景消失"不可能发生。 */
+  wpStage(id).classList.add("on");
+  wpCur = id;
+  wpBusy = false;
+  // 切换进行中被要求重排的，现在补上
+  if (wpPendingRestart){ wpPendingRestart = false; setTimeout(startWallpaperRotation, 0); }
+}
+let _wpLastFx = "";
+
+/* ═══ 轮换 ═══ */
 function startWallpaperRotation(){
   stopWallpaperRotation();
+  /* ★★ 切换**在飞的时候绝不能重排图层**。
+     下面会对 wp-a / wp-b **两层**都调用 wpLoad()，而 wpLoad 会清掉 .on 并覆盖图片 ——
+     如果此刻正好有一次切换在跑，那次切换的收尾就会落在"两层都没有 .on"的状态上
+     ⇒ **切完之后背景整个消失**（用户只会看到"黑屏/没效果"，极难归因）。
+     这在真实使用里很容易触发：面板上改「切换间隔 / 开关 / 选壁纸」都会调到这里，
+     只要撞上那 2.6 秒的切换窗口就会出问题。
+     做法：标记一下，等这次切换结束后再按新配置重排。 */
+  if (wpBusy){ wpPendingRestart = true; return; }
   wpActive = (Array.isArray(wpPick) && wpPick.length) ? wpPick.slice() : WALLPAPERS.slice();
 
   if (!wpEnabled || !wpActive.length){
@@ -1095,36 +1378,234 @@ function startWallpaperRotation(){
   }
   document.body.classList.remove("no-wallpaper");
 
-  wpIdx = Math.min(wpIdx, wpActive.length - 1);
-  // 第一张直接放上，不做特效
-  const a = $("#wp-a"), b = $("#wp-b");
-  a.className = "wp-layer on"; b.className = "wp-layer";
-  a.style.cssText = ""; b.style.cssText = "";
-  a.style.backgroundImage = 'url("' + wpUrl(wpActive[wpIdx]) + '")';
-  a.style.backgroundSize = "cover"; a.style.backgroundPosition = "center";
-  a.style.transition = "transform .9s cubic-bezier(.2,.7,.3,1)";
+  // 首图：直接放上（开屏会盖住过程；没有开屏时也不该有突兀的过渡）
+  const a = wpStage("wp-a");
+  wpLoad("wp-a", wpUrl(wpActive[0]));
+  wpLoad("wp-b", wpUrl(wpActive[0]));
+  wpNormalize("wp-a");
+  wpStage("wp-a").classList.add("on");
   wpCur = "wp-a";
-  applySway();                      // 首图也要带上当前位移
+  applySway();
 
-  // 只选 1 张 = 不轮换
   if (wpActive.length < 2 || wpIntervalS <= 0) return;
 
-  // ★ 随机轮换：每次随机挑一张，并避免与当前这张重复
-  //   （2 张时退化为交替；1 张时上面已提前 return，不轮换）
+  // 随机轮换：每次随机挑一张，且不与当前重复
   wpTimer = setInterval(() => {
-    if (wpActive.length <= 1) return;
+    if (wpActive.length <= 1 || wpBusy) return;
     const cur = wpActive[wpIdx];
-    let next = wpIdx;
-    let guard = 0;
-    do {
-      next = Math.floor(Math.random() * wpActive.length);
-      guard++;
-    } while (wpActive[next] === cur && guard < 20);
+    let next = wpIdx, guard = 0;
+    do { next = Math.floor(Math.random() * wpActive.length); guard++; }
+    while (wpActive[next] === cur && guard < 20);
     wpIdx = next;
     wpTransition(wpUrl(wpActive[wpIdx]));
   }, wpIntervalS * 1000);
 }
 function stopWallpaperRotation(){ if (wpTimer){ clearInterval(wpTimer); wpTimer = null; } }
+
+/* ═══════════════════════════════════════════════════════════
+   开屏：随机壁纸 + 随机入场特效 + 随机英文名特效 + 随机箴言
+   ═══════════════════════════════════════════════════════════ */
+let splashTimers = [];
+const after = (ms, fn) => splashTimers.push(setTimeout(fn, ms));
+function clearSplashTimers(){ splashTimers.forEach(clearTimeout); splashTimers = []; }
+let splashWp = "";
+
+function buildWordmark(){
+  const host = document.getElementById("wmMain");
+  if (!host) return [];
+  const text = "KIRA BOOST";
+  host.innerHTML = "";
+  [...text].forEach((ch, i) => {
+    if (ch === " "){
+      const sp = document.createElement("span");
+      sp.className = "sp"; host.appendChild(sp); return;
+    }
+    const s = document.createElement("span");
+    s.className = "L " + (i < 4 ? "o" : "e");   // KIRA 渐变实心 / BOOST 描边
+    s.textContent = ch; host.appendChild(s);
+  });
+  return [...host.querySelectorAll(".L")];
+}
+
+const WM_FX_FN = {
+  assemble: L => L.forEach((s,i) => s.animate(
+    [{opacity:0, transform:`translateY(${.55+Math.random()*.35}em) rotate(${-9+Math.random()*18}deg) scale(.85)`},
+     {opacity:1, transform:"none"}],
+    {duration:820, delay:i*46, easing:"cubic-bezier(.16,1,.3,1)", fill:"backwards"})),
+  glitch: L => {
+    L.forEach((s,i) => s.animate(
+      [{opacity:0, transform:"translateX(-14px) skewX(22deg)",
+        textShadow:"3px 0 rgba(255,111,174,.9), -3px 0 rgba(94,240,192,.9)"},
+       {opacity:1, offset:.18},
+       {transform:"translateX(9px) skewX(-14deg)", offset:.34},
+       {transform:"translateX(-5px) skewX(7deg)", offset:.5},
+       {transform:"translateX(3px)", offset:.66},
+       {transform:"none", textShadow:"0 0 0 transparent"}],
+      {duration:1050, delay:i*52, easing:"ease-out", fill:"backwards"}));
+    const sh = document.getElementById("wmSheen");
+    if (sh) sh.animate([{opacity:0},{opacity:.85, offset:.5},{opacity:0}],
+      {duration:900, delay:260, easing:"ease-out"});
+  },
+  neon: L => L.forEach((s,i) => s.animate(
+    [{opacity:.18, filter:"blur(3px)", textShadow:"none"},
+     {opacity:1, offset:.55, filter:"blur(0px)", textShadow:"0 0 22px currentColor"},
+     {opacity:1, filter:"blur(0px)", textShadow:"0 0 9px rgba(255,255,255,.35)"}],
+    {duration:1000, delay:i*92, easing:"ease-out", fill:"backwards"})),
+  sweep: L => {
+    L.forEach((s,i) => s.animate([{opacity:.15},{opacity:1}],
+      {duration:420, delay:150+i*40, fill:"backwards"}));
+    const sh = document.getElementById("wmSheen");
+    if (sh) sh.animate(
+      [{opacity:0, transform:"translateX(-120%)"},{opacity:1, offset:.5},
+       {opacity:0, transform:"translateX(520%)"}],
+      {duration:1250, delay:180, easing:"cubic-bezier(.5,0,.3,1)"});
+  },
+  wave: L => L.forEach((s,i) => s.animate(
+    [{opacity:0, transform:"translateY(.5em)"},
+     {opacity:1, transform:"translateY(-.12em)", offset:.62},
+     {opacity:1, transform:"translateY(0)"}],
+    {duration:900, delay:Math.abs(i-(L.length-1)/2)*115,
+     easing:"cubic-bezier(.3,1.3,.4,1)", fill:"backwards"})),
+  shatter: L => L.forEach((s,i) => s.animate(
+    [{opacity:0, transform:"scale(2.7)", filter:"blur(15px)"},
+     {opacity:1, offset:.45, filter:"blur(0px)"},
+     {transform:"scale(1)", filter:"blur(0px)"}],
+    {duration:1000, delay:i*54, easing:"cubic-bezier(.16,1,.3,1)", fill:"backwards"})),
+};
+
+const MOTTO_FX_FN = {
+  rise:  el => el.animate([{opacity:0, transform:"translateY(12px)"},{opacity:1, transform:"none"}],
+                          {duration:750, easing:"cubic-bezier(.16,1,.3,1)", fill:"backwards"}),
+  blur:  el => el.animate([{opacity:0, filter:"blur(9px)"},{opacity:1, filter:"blur(0)"}],
+                          {duration:850, easing:"ease-out", fill:"backwards"}),
+  track: el => el.animate([{opacity:0, letterSpacing:"1.4em"},{opacity:1, letterSpacing:".02em"}],
+                          {duration:1000, easing:"cubic-bezier(.16,1,.3,1)", fill:"backwards"}),
+  type:  async el => {
+    const txt = el.dataset.txt || "";
+    el.style.opacity = "1";
+    for (let i = 1; i <= txt.length; i++){
+      el.textContent = txt.slice(0, i);
+      await sleep(Math.max(9, 620 / Math.max(1, txt.length)));
+    }
+  },
+};
+
+function playSplash(){
+  const sp = document.getElementById("splash");
+  if (!sp || !wpSplash || !WALLPAPERS.length) return;
+  /* ★★ 兜底：开屏一旦显示，就必须**保证**会被收掉。
+     任何异常（特效函数写错、元素缺失、动画 API 不支持……）都不能让
+     "特效出问题"升级成"页面不可用"。最坏情况只是这一轮开屏没播好。 */
+  try {
+    _playSplash();
+  } catch (e) {
+    console.error("[accel] 开屏动画失败，已直接收掉", e);
+    try { finishSplash(); } catch (_) {}
+  }
+}
+
+function _playSplash(){
+  const sp = document.getElementById("splash");
+  clearSplashTimers();
+  sp.classList.remove("out");
+  sp.classList.add("show");
+
+  // 随机壁纸（不与上一张重复）
+  let pick;
+  do { pick = rand(WALLPAPERS); }
+  while (pick === splashWp && WALLPAPERS.length > 1);
+  splashWp = pick;
+  // 主背景也换成这张 ⇒ 开屏淡出后无缝接续（否则会出现"开屏一张、背景另一张"）
+  // ★ 但**切换在飞的时候不能直接改图层**：wpLoad 会清掉 .on 并覆盖图片，
+  //   把在飞的那次切换搅乱 ⇒ 收尾后背景消失。改成等它结束再统一重排。
+  if (wpBusy){
+    wpPendingRestart = true;
+  } else {
+    wpLoad("wp-a", wpUrl(pick));
+    wpNormalize("wp-a");
+    wpStage("wp-a").classList.add("on");
+    wpCur = "wp-a";
+  }
+
+  const spWp = document.getElementById("spWp");
+  const spRim = document.getElementById("spRim");
+  if (spWp){
+    spWp.style.cssText = "";
+    spWp.style.backgroundImage = 'url("' + wpUrl(pick) + '")';
+    spWp.style.backgroundSize = "cover";
+    spWp.style.backgroundPosition = "center";
+    const fxs = ["iris","wipe","zoom","ink","blinds"];
+    const f = rand(fxs);
+    if (f === "iris" || f === "ink"){
+      const cx = 26 + Math.random()*48, cy = 24 + Math.random()*52;
+      spWp.animate([{clipPath:`circle(0% at ${cx}% ${cy}%)`, transform:"scale(1.14)"},
+                    {clipPath:`circle(120% at ${cx}% ${cy}%)`, transform:"scale(1)"}],
+        {duration:1900, easing:"cubic-bezier(.32,0,.68,1)", fill:"both"});
+      if (spRim){
+        spRim.style.cssText = "";
+        spRim.style.background =
+          `radial-gradient(circle at ${cx}% ${cy}%, transparent 40%,`
+          + ` rgba(255,226,244,.9) 47%, rgba(255,111,174,.42) 55%, transparent 64%)`;
+        spRim.animate([{opacity:0, transform:"scale(.35)"},{opacity:1, offset:.36},
+                       {opacity:1, offset:.64},{opacity:0, transform:"scale(2.7)"}],
+          {duration:2050, easing:"cubic-bezier(.32,0,.68,1)", fill:"forwards"});
+      }
+      if (f === "ink")
+        spWp.animate([{filter:"url(#wpInk)"},{filter:"url(#wpInk)"}],
+          {duration:1900, fill:"both"});
+    } else if (f === "zoom"){
+      spWp.animate([{transform:"scale(1.3)", filter:"blur(12px)", opacity:0},
+                    {transform:"scale(1)", filter:"blur(0)", opacity:1}],
+        {duration:1700, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"});
+    } else if (f === "wipe"){
+      spWp.animate([{clipPath:"inset(0 100% 0 0)", transform:"scale(1.08)"},
+                    {clipPath:"inset(0 0 0 0)", transform:"scale(1)"}],
+        {duration:1500, easing:"cubic-bezier(.66,0,.24,1)", fill:"both"});
+    } else {
+      spWp.animate([{transform:"scale(1.18)", opacity:0},{transform:"scale(1)", opacity:1}],
+        {duration:1600, easing:"cubic-bezier(.16,1,.3,1)", fill:"both"});
+    }
+  }
+
+  // 主标题：随机一套入场特效
+  const L = buildWordmark();
+  // ★ 先取特效名，再用它去映射里取函数 —— 不能写成
+  //   rand(WM_FX)(WM_FX_FN)(L)（那等于调用字符串，会抛 TypeError，
+  //   而且异常发生在显示之后 ⇒ 开屏卡死）
+  if (L.length) WM_FX_FN[rand(WM_FX)](L);
+  const line = document.getElementById("spLine");
+  if (line) line.animate([{width:"0"},{width:"46%"}],
+    {duration:900, delay:520, easing:"ease-out", fill:"backwards"});
+
+  // 箴言
+  if (wpSplashMotto){
+    const mEl = document.getElementById("motto");
+    if (mEl){
+      const txt = rand(MOTTOES);
+      mEl.dataset.txt = txt;
+      mEl.textContent = txt;
+      mEl.style.opacity = "";                    // 先恢复可见（type 特效自己会控）
+      after(780, () => MOTTO_FX_FN[rand(MOTTO_FX)](mEl));
+    }
+  }
+
+  after(3400, finishSplash);
+}
+
+function finishSplash(){
+  clearSplashTimers();
+  const sp = document.getElementById("splash");
+  if (!sp || !sp.classList.contains("show")) return;
+  sp.classList.add("out");                 // 交给 CSS 过渡淡出
+  /* 隐藏只靠普通 setTimeout —— **不用 animate().finished**：
+     那个 promise 在动画时钟被节流时可能永远不 resolve，
+     会让开屏一直挡着页面。这里即使定时器慢一点，也一定会隐藏。 */
+  setTimeout(() => {
+    sp.classList.remove("show", "out");
+    sp.style.opacity = "";
+    wpCancelAnimations(sp);
+  }, 850);
+}
 
 /* ═══ 手动重置熔断 ═══ */
 async function resetBreaker(name){
@@ -1170,6 +1651,8 @@ poll(); setInterval(poll, 3000);
       if (typeof w.wallpaper_effect === "string" && w.wallpaper_effect) wpEffect = w.wallpaper_effect;
       if (Array.isArray(w.wallpaper_files)) wpPick = w.wallpaper_files.slice();
       if (typeof w.wallpaper_parallax === "boolean") wpParallax = w.wallpaper_parallax;
+      if (typeof w.wallpaper_splash === "boolean") wpSplash = w.wallpaper_splash;
+      if (typeof w.wallpaper_splash_motto === "boolean") wpSplashMotto = w.wallpaper_splash_motto;
     }
   } catch(e){ /* 用默认 */ }
   if (!WALLPAPERS.length){
@@ -1180,7 +1663,10 @@ poll(); setInterval(poll, 3000);
   }
   initParallax();
   startWallpaperRotation();
+  playSplash();          // 开屏（随机壁纸 + 随机特效 + 随机箴言）
 })();
+$("#splash").addEventListener("click", finishSplash);
+window.addEventListener("keydown", e2 => { if (e2.key === "Escape") finishSplash(); });
 
 loadConfig().catch(e => {
   $("#form").innerHTML = '<div class="empty">' + icon("triangle-alert")
