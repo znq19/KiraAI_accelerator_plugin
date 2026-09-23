@@ -5,12 +5,19 @@
     我们在 chat() 内部改用 chat_stream() 收 SSE，**边收边把已成型的 <msg> 段发出去**，
     收完后再 return 一个"完整的 LLMResponse"，让框架后续流程照常走。
 
-对其它插件透明的三个设计点（关键）：
-    ① 返回完整 LLMResponse —— 框架的 ON_LLM_RESPONSE / XML 解析 / 记忆写入全照常，
-       别的插件看到的 text_response 依然是完整语义。
-    ② 已发送的段从 text_response 里剥离 —— 框架不会重复发。整段发完则返回 <msg/>。
+对其它插件透明的设计点（关键）：
+    ① 返回**完整** LLMResponse —— 框架的 ON_LLM_RESPONSE / XML 解析 / 记忆写入全照常，
+       别的插件看到的 text_response 依然是完整语义（**绝不改写它**）。
+    ② "哪些段已经抢先发出去了"只记在响应的私有属性上，**剥离推迟到发送层**做
+       （见 main.py 的 `_install_early_sent_strip` 与 early_sent.py 的说明）。
     ③ 由调用方（main.py）补广播 ON_MESSAGE_SENT —— 绕过框架发送层就必须补这个钩子，
        否则 sustained-chat 那类订阅 ON_MESSAGE_SENT 的插件会"瞎掉"。
+
+★ 2026-09-23 删除：原来这里还有一个 `StreamFirstRunner` + `make_chat_impl`，
+  它把"已发段剥离"写进了 `text_response`，与 `StreamEngine` 的做法**不一致**，
+  而它**从来没有被生产路径使用**（main.py 走的是 StreamEngine）。
+  一个行为不同的僵尸副本迟早会被误用（它那套写法正是"下游插件误判"的来源），
+  所以直接删掉 —— 只保留 `SegmentEmitter` 和 `_absorb` 这两个真正在用的部件。
 
 风险与边界（诚实标注）：
     - tool_calls 回合不发：流里一旦出现工具调用增量，本回合就不抢先发（这不是最终回复）。
@@ -72,87 +79,28 @@ class SegmentEmitter:
     def mark_failed(self) -> None:
         self.send_failed = True
 
+    def push_back_many(self, segs: list[str]) -> None:
+        """按原顺序把多段放回缓冲（一次前置，避免逐段倒序出错）。
+
+        ★ 为什么需要它：`pop_pending()` 会把候选段**一次性弹出**，
+          随后逐个尝试发送。若第 i 段失败就 `break`，那么**第 i 段之后的段
+          还留在调用方的局部列表里** —— 既不在缓冲、也没发出去 ⇒ **内容丢失**。
+          所以退出时必须把"没处理到的"整批放回。
+        """
+        if segs:
+            self.buf = "".join(segs) + self.buf
+
+    def push_back(self, seg: str) -> None:
+        """把一段放回「未发送缓冲」。
+
+        ★ 发送失败时必须调用：这一段没投递，要由 `remaining()` 交回框架发送，
+          否则它会**静默消失**（既没发出去，也不在交回的文本里）。
+        """
+        self.buf = seg + self.buf
+
     def remaining(self) -> str:
         """收流结束后，仍未发送的尾巴（交回框架，走框架原发送流程）。"""
         return self.buf
-
-
-class StreamFirstRunner:
-    """包装一个 LLM 客户端，把它的 chat() 变成"流式收集 + 抢先发送"。
-
-    :param emit: 异步发送回调 —— 接一个 `<msg>...</msg>` 字符串，负责真正发出去
-                 （并补广播 ON_MESSAGE_SENT）。
-    """
-
-    def __init__(self, client: Any, emit: Callable[[str], Awaitable[None]]):
-        self.client = client
-        self.emit = emit
-
-    async def run(self, request: LLMRequest, **kwargs) -> LLMResponse:
-        kwargs.pop("stream", None)
-
-        text_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        tool_acc: dict[int, dict] = {}
-        usage: dict | None = None
-        saw_tool_call = False
-
-        emitter = SegmentEmitter()
-
-        started = time.perf_counter()
-        first_seg_at: Optional[float] = None
-
-        async for chunk in self.client.chat_stream(request, **kwargs):
-            _absorb(chunk, text_parts, reasoning_parts, tool_acc)
-            if chunk.tool_calls_delta:
-                saw_tool_call = True
-            if chunk.usage:
-                usage = chunk.usage
-
-            # 出现工具调用 ⇒ 本轮不是最终回复 ⇒ 立刻停止抢先发（已发的保持已发）
-            if saw_tool_call or emitter.send_failed:
-                continue
-
-            if chunk.delta_text:
-                emitter.feed(chunk.delta_text)
-                for seg in emitter.pop_pending():
-                    if first_seg_at is None:
-                        first_seg_at = time.perf_counter()
-                    try:
-                        await self.emit(seg)
-                        emitter.emitted.append(seg)
-                    except Exception:  # noqa: BLE001
-                        # 发送失败：停手，后续内容全部交回框架（不丢字）
-                        emitter.mark_failed()
-                        emitter.pending.clear()
-                        break
-
-        full_text = "".join(text_parts)
-        resp = LLMResponse(full_text)
-        resp.reasoning_content = "".join(reasoning_parts)
-        for idx in sorted(tool_acc):
-            a = tool_acc[idx]
-            resp.tool_calls.append({
-                "id": a["id"],
-                "type": "function",
-                "function": {"name": a["name"], "arguments": a["arguments"]},
-            })
-        if usage:
-            resp.input_tokens = usage.get("input_tokens")
-            resp.output_tokens = usage.get("output_tokens")
-            resp.cached_tokens = usage.get("cached_tokens")
-        resp.time_consumed = round(time.perf_counter() - started, 2)
-
-        # ── 关键：把已抢先发出的段从 text_response 里剥离，避免框架重复发送 ──
-        early = len(emitter.emitted)
-        if early:
-            remaining = emitter.remaining()
-            resp.text_response = remaining if remaining.strip() else "<msg/>"
-            resp.__dict__["_accel_early_sent"] = early
-            resp.__dict__["_accel_first_seg_s"] = (
-                round(first_seg_at - started, 3) if first_seg_at else None
-            )
-        return resp
 
 
 def _absorb(chunk: LLMStreamChunk, text_parts, reasoning_parts, tool_acc) -> None:
@@ -172,7 +120,7 @@ def _absorb(chunk: LLMStreamChunk, text_parts, reasoning_parts, tool_acc) -> Non
             acc["arguments"] += fn["arguments"]
 
 
-def make_chat_impl(runner_factory: Callable[[Any], StreamFirstRunner]):
+
     """生成 chat() 的替代实现，供 patches.install 使用。"""
 
     async def impl(self, request: LLMRequest, **kwargs) -> Any:
