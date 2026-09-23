@@ -133,7 +133,12 @@ async def main() -> None:
     sent = []
 
     async def emit(s):
+        # ★ 新契约：返回 True 表示"这一段确实投递出去了"。
+        #   引擎按**返回值**记账，而不是靠"有没有抛异常" ——
+        #   因为发送是不可撤销的副作用，投递之后的杂事抛异常不该改变这个事实
+        #   （否则已发段会被当成没发 ⇒ 框架重复发送）。
         sent.append(s)
+        return True
 
     c1 = FakeClient(["<msg><text>你好</text></msg>", "<msg><text>再见</text></msg>"])
     eng = StreamEngine(force_stream=True, emit=emit)
@@ -144,7 +149,7 @@ async def main() -> None:
           "<msg><text>你好</text></msg>" in resp.text_response
           and "<msg><text>再见</text></msg>" in resp.text_response,
           f"实际={resp.text_response!r}")
-    check("已抢发段数被记录在标记里",
+    check("已抢发段数被记录在私有标记里",
           resp.__dict__.get("_accel_early_sent_count") == 2,
           f"实际={resp.__dict__.get('_accel_early_sent_count')}")
     check("统计标记为流式", resp.__dict__.get("_accel_stats", {}).get("streamed") is True)
@@ -159,6 +164,7 @@ async def main() -> None:
     sent3 = []
 
     async def emit3(s):
+        return True
         sent3.append(s)
 
     eng3 = StreamEngine(force_stream=True, emit=emit3)
@@ -176,6 +182,7 @@ async def main() -> None:
     sent4 = []
 
     async def emit4(s):
+        return True
         sent4.append(s)
 
     eng4 = StreamEngine(force_stream=True, emit=emit4)

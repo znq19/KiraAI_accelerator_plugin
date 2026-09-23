@@ -49,6 +49,36 @@ logger = logging.getLogger("kira_accelerator")
 MARK = "__kira_accel__"
 # 反向引用：从包装函数拿回原函数（多层包装时用得上）
 MARK_ORIGINAL = "__kira_accel_original__"
+# 标记：这个接管点**有不可撤销的副作用**（例：消息真的发出去了）
+SIDE_EFFECTS = "__kira_accel_side_effects__"
+
+
+def mark_side_effects(fn):
+    """声明「这个实现有不可撤销的副作用」。
+
+    ★ 为什么必须声明：`guard` 默认在实现抛异常时**回落原实现**。
+      对纯函数（建客户端、读配置）这是很好的兜底；
+      但对**已经发了消息**的函数，回落 = **再发一遍** ——
+      用户线上看到的就是"同一段回复重复出现"。
+
+      所以这类接管点出错时**必须让异常抛出去**：
+      宁可让上层知道这次失败，也绝不重复执行副作用。
+    """
+    setattr(fn, SIDE_EFFECTS, True)
+    return fn
+
+
+def has_side_effects(fn) -> bool:
+    """判断实现（或其被包裹的内层）是否声明了副作用。"""
+    cur = fn
+    for _ in range(5):                      # 解掉 functools.wraps 的几层
+        if getattr(cur, SIDE_EFFECTS, False):
+            return True
+        nxt = getattr(cur, "__wrapped__", None) or getattr(cur, "__func__", None)
+        if nxt is None or nxt is cur:
+            break
+        cur = nxt
+    return False
 
 class PatchHandle:
     """一个接管点的句柄。装得上、还原得回、坏得掉。"""
@@ -109,6 +139,13 @@ def guard(name: str, original: Callable, impl: Callable) -> Callable:
                 return result
             except Exception as exc:  # noqa: BLE001
                 br.fail(exc)
+                if has_side_effects(impl):
+                    # ★★ 有副作用 ⇒ **不回退**。回退等于把副作用再做一遍
+                    #    （消息重发、回复重复）。宁可把异常交给上层。
+                    logger.exception(
+                        "[accel] 接管点 %s 出错；该实现有不可撤销的副作用，"
+                        "**不回退原实现**（否则会重复发送）", name)
+                    raise
                 logger.exception("[accel] 接管点 %s 出错，回落原实现", name)
                 return await original(*args, **kwargs)
 
@@ -125,6 +162,11 @@ def guard(name: str, original: Callable, impl: Callable) -> Callable:
             return result
         except Exception as exc:  # noqa: BLE001
             br.fail(exc)
+            if has_side_effects(impl):
+                logger.exception(
+                    "[accel] 接管点 %s 出错；该实现有不可撤销的副作用，"
+                    "**不回退原实现**（否则会重复发送）", name)
+                raise
             logger.exception("[accel] 接管点 %s 出错，回落原实现", name)
             return original(*args, **kwargs)
 

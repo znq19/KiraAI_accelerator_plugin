@@ -7,7 +7,7 @@
 
 对其它插件透明（三条铁律）：
   - 返回**完整** LLMResponse（ON_LLM_RESPONSE / XML 解析 / 记忆写入全照常）
-  - 已发段从 text_response 剥离（框架不会重复发）
+  - 已发段**不改写 text_response**；剥离在发送层完成（框架不会重复发）
   - 由上层补广播 ON_MESSAGE_SENT
 
 安全设计：
@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import contextvars
+import logging
 import time
 from typing import Any, Awaitable, Callable, Optional
 
@@ -36,6 +37,8 @@ from .early_sent import mark_early_sent as _mark_early_sent
 #    （实测 KiraAI-subagent-plugin/main.py:1344），全局集合会把并发的第二个调用
 #    误判成递归 ⇒ 流式能力随机失效。contextvars 是 task-local 的，天然正确。
 _IN_FLIGHT: contextvars.ContextVar[tuple] = contextvars.ContextVar("accel_inflight", default=())
+
+logger = logging.getLogger("kira_accelerator")
 
 
 class LLMClientProxy:
@@ -160,16 +163,29 @@ class StreamEngine:
                 continue
             if chunk.delta_text:
                 emitter.feed(chunk.delta_text)
-                for seg in emitter.pop_pending():
+                batch = emitter.pop_pending()
+                for bi, seg in enumerate(batch):
                     if first_seg_at is None:
                         first_seg_at = time.perf_counter()
+                    # ★★ 按**投递返回值**记账（而非"有没有抛异常"）。
+                    #   emit 的契约：返回 True = 真的发出去了；False/异常 = 没投递。
+                    #   为什么不能用异常判：发送是**不可撤销**的副作用，
+                    #   投递成功之后的记账/补广播万一抛异常，就会把"已发出去的段"
+                    #   误判成"没发出去" ⇒ 框架剥离少切一段 ⇒ **重复发送**（线上事故）。
                     try:
-                        await self.emit(seg)          # type: ignore[misc]
-                        emitter.emitted.append(seg)
-                    except Exception:  # noqa: BLE001
+                        ok = await self.emit(seg)     # type: ignore[misc]
+                    except Exception:                 # noqa: BLE001
+                        ok = False
+                        logger.exception("[accel] 抢先发送回调异常，本段交回框架")
+                    if ok is False or ok is None:
+                        # ★ 没投递 ⇒ 这一段**以及后面还没处理的**全部放回缓冲，
+                        #   稍后由 remaining() 交回框架发送。
+                        #   ⚠️ 不能只放回当前这一段就 break —— 后面那些已经被
+                        #   pop_pending 弹出、既不在缓冲也没发出去，会**静默丢内容**。
+                        emitter.push_back_many(batch[bi:])
                         emitter.mark_failed()
-                        emitter.pending.clear()
                         break
+                    emitter.emitted.append(seg)
 
         resp = LLMResponse("".join(text_parts))
         resp.reasoning_content = "".join(reasoning_parts)

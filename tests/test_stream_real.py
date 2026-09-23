@@ -170,7 +170,9 @@ async def main():
     emitted = []
 
     async def emit(seg):
+        # ★ 新契约：返回 True = 这一段确实投递出去了（引擎按返回值记账）
         emitted.append((time.perf_counter(), seg))
+        return True
 
     client = make_client()
     proxy = LLMClientProxy(
