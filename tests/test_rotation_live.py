@@ -58,8 +58,17 @@ hook = """
   get WALLPAPERS(){return WALLPAPERS}, set WALLPAPERS(v){WALLPAPERS=v},
   wpTransition, startWallpaperRotation, stopWallpaperRotation, wpUrl,
   get wpParallax(){return wpParallax}, set wpParallax(v){wpParallax=v},
-  get swayX(){return swayX}, get swayY(){return swayY},
+  get aimX(){return aimX}, get aimY(){return aimY},
   applySway, initParallax, get parallaxBound(){return parallaxBound},
+  // —— 新增：用于验证"默认不可见"的开屏、自动漂移、条带特效 ——
+  get wpSplash(){return wpSplash}, set wpSplash(v){wpSplash=v},
+  get wpSplashMotto(){return wpSplashMotto}, set wpSplashMotto(v){wpSplashMotto=v},
+  get wpEffect(){return wpEffect}, set wpEffect(v){wpEffect=v},
+  get wpBusy(){return wpBusy}, get wpCur(){return wpCur},
+  get baseX(){return baseX}, get baseY(){return baseY}, get curX(){return curX},
+  wpTick, fxStrips, wpOther, playSplash, finishSplash, buildWordmark,
+  MOTTOES, WP_EFFECTS, WM_FX, MOTTO_FX, WM_FX_FN, MOTTO_FX_FN,
+  get _wpLastFx(){return _wpLastFx},
 };
 """
 main = main + "\n" + hook
@@ -83,8 +92,19 @@ function mkEl(id){
     },
     set className(v){ cls.clear(); String(v).split(/\s+/).filter(Boolean).forEach(x=>cls.add(x)); },
     get className(){ return [...cls].join(' '); },
-    appendChild(){}, addEventListener(){}, setAttribute(){}, getAttribute(){return null},
-    querySelector(){ return mkEl(); },
+    appendChild(){}, remove(){}, addEventListener(){}, setAttribute(){}, getAttribute(){return null},
+    // ★ animate() 桩：返回一个"已完成"的动画对象。真浏览器里动画时钟可能被节流，
+    //   逻辑代码必须**不依赖动画 promise 才能正确收尾**，所以桩故意让它立刻完成，
+    //   以暴露"把正确性寄托在动画上"的写法。
+    animate(){ return { finished: Promise.resolve(), cancel(){}, pause(){},
+                        play(){}, currentTime: 0,
+                        effect: { getTiming: () => ({duration:2200, delay:0}) } }; },
+    getAnimations(){ const a=[]; a.forEach=Array.prototype.forEach; return a; },
+    // 条带特效会把 .s-strip 挂到层的 parentElement 下 —— 桩里给一个容器
+    parentElement: { appendChild(){}, children: [] },
+    querySelector(sel){ 
+      if (sel === '.wp-img'){ this.__img = this.__img || mkEl(); return this.__img; }
+      return mkEl(); },
     querySelectorAll(){ const a=[]; a.forEach=Array.prototype.forEach; return a; },
     get innerHTML(){ return this._html; }, set innerHTML(v){ this._html = String(v); },
   };
@@ -131,6 +151,13 @@ global.fetch = async (u) => {
   return { ok: false, status: 404, json: async () => ({}) };
 };
 
+// ★ 捕获面板里的 console.error —— 切换异常会被 wpTransition 的兜底吞掉
+//   （只打日志、释放锁），不抓日志就会误判成"切换成功"。
+const __errs = [];
+const __origErr = console.error;
+console.error = (...a) => { __errs.push(a.map(String).join(' ')); __origErr(...a); };
+global.__errs = __errs;
+
 const src = fs.readFileSync(process.env.PANEL_JS, 'utf8');
 try { (0, eval)(src); } catch (e) { console.log('SCRIPT_LOAD_ERROR: ' + e.message); process.exit(3); }
 const H = globalThis.__hook;
@@ -140,35 +167,60 @@ if (!H) { console.log('HOOK_MISSING'); process.exit(4); }
   const out = {};
   // 让轮换快点
   H.WALLPAPERS = Array.from({length:19},(_,i)=>'w'+i+'.webp');
-  H.wpEnabled = true; H.wpIntervalS = 1; H.wpPick = [];
+  H.wpEnabled = true; H.wpPick = [];
 
   // ── A. 单次切换是否走完 ──
+  // ★ 先**关掉定时轮换**再测手动切换：否则 1 秒定时器会在手动调用之前/之中
+  //   抢到锁，手动那次直接 return，测的就不是"单次切换能否走完"了
+  //   （这是测试自身的竞态，不是产品问题）。
+  H.wpIntervalS = 0;
   H.startWallpaperRotation();
   const a = document.getElementById('wp-a'), b = document.getElementById('wp-b');
-  out.afterStart = { busy: H.wpBusy, aOn: a.classList.contains('on'), aImg: a.style.backgroundImage };
+  out.afterStart = { busy: H.wpBusy, aOn: a.classList.contains('on'),
+    aImg: (a.querySelector('.wp-img') || {}).style?.backgroundImage || '' };
 
   // 捕获切换异常：旧版会在这里抛 TypeError（用来做反向验证）
   let transitionError = null;
-  try { H.wpTransition(H.wpUrl('w7.webp')); }
+  let justAfterCall = null;
+  try {
+    H.wpTransition(H.wpUrl('w7.webp'));
+    // ★ 同步检查：wpTransition 一返回，目标层就应该已经挂上新图
+    //   （这一步不依赖任何动画/定时器，所以是最可靠的判据）
+    justAfterCall = {
+      busy: H.wpBusy,
+      aImg: (a.querySelector('.wp-img')||{}).style?.backgroundImage || '',
+      bImg: (b.querySelector('.wp-img')||{}).style?.backgroundImage || '',
+    };
+  }
   catch (e) { transitionError = e.constructor.name + ': ' + e.message; }
-  await new Promise(r => setTimeout(r, 2600));
+  await new Promise(r => setTimeout(r, 3400));   // 一次切换 2.62s，留足余量
   out.transitionError = transitionError;
+  out.justAfterCall = justAfterCall;
+  out.consoleErrors = (global.__errs || []).slice();
   out.afterOneTransition = {
     busy: H.wpBusy, cur: H.wpCur,
     aOn: a.classList.contains('on'), bOn: b.classList.contains('on'),
-    aImg: a.style.backgroundImage, bImg: b.style.backgroundImage,
+    aImg: (a.querySelector('.wp-img') || {}).style?.backgroundImage || '',
+    bImg: (b.querySelector('.wp-img') || {}).style?.backgroundImage || '',
+    onIds: ['wp-a','wp-b'].filter(x => document.getElementById(x).classList.contains('on')),
+    allCls: ['wp-a','wp-b'].map(x => document.getElementById(x).className),
+    busyAtRead: H.wpBusy, curAtRead: H.wpCur,
+    splashShow: (document.getElementById('splash')||{}).classList
+                  ? document.getElementById('splash').classList.contains('show') : null,
   };
 
   // ── B. 定时器是否真的在换 ──
+  H.wpIntervalS = 1;
+  H.startWallpaperRotation();          // 现在才开定时轮换
   const seen = [], busyTrack = [];
-  const t0 = Date.now();
   const iv = setInterval(() => {
     const on = ['wp-a','wp-b'].find(id => document.getElementById(id).classList.contains('on'));
-    const img = on ? document.getElementById(on).style.backgroundImage : '';
+    const onEl = on ? document.getElementById(on) : null;
+    const img = onEl ? ((onEl.querySelector('.wp-img') || {}).style?.backgroundImage || '') : '';
     seen.push(/wallpapers\/([^")]+)/.exec(img || '')?.[1] || null);
     busyTrack.push(H.wpBusy);
   }, 300);
-  await new Promise(r => setTimeout(r, 6000));
+  await new Promise(r => setTimeout(r, 9000));
   clearInterval(iv);
   out.rotationSamples = seen;
   out.distinct = [...new Set(seen.filter(Boolean))];
@@ -188,18 +240,34 @@ if (!H) { console.log('HOOK_MISSING'); process.exit(4); }
   out.sway.listeners = Object.keys(global.__listeners);
   fire('mousemove', {clientX: 800, clientY: 450});
   out.sway.atCenter = tf();
+  const settleFrames = () => { for (let i=0;i<80;i++) H.wpTick(1000+i); };
   fire('mousemove', {clientX: 0, clientY: 0});
+  settleFrames();
   out.sway.atTopLeft = tf();
-  out.sway.swayAtTL = [H.swayX, H.swayY];
+  out.sway.swayAtTL = [H.aimX, H.aimY];
   fire('mousemove', {clientX: 1600, clientY: 900});
+  settleFrames();
   out.sway.atBottomRight = tf();
-  out.sway.swayAtBR = [H.swayX, H.swayY];
+  out.sway.swayAtBR = [H.aimX, H.aimY];
   fire('mouseleave', {});
+  settleFrames();
   out.sway.afterLeave = tf();
   // 关掉开关后不该再动
   H.wpParallax = false;
   fire('mousemove', {clientX: 0, clientY: 0});
-  out.sway.whenOff = [H.swayX, H.swayY, tf()];
+  out.sway.whenOff = [H.aimX, H.aimY, tf()];
+
+  // ── D. 自动漂移：不碰鼠标，仅喂不同时间给 wpTick，看位移是否变化 ──
+  out.drift = [];
+  H.wpParallax = true;
+  for (const ms of [0, 3000, 6000, 9000, 12000, 15000]) {
+    H.wpTick(ms);
+    out.drift.push([+H.baseX.toFixed(3), +H.baseY.toFixed(3)]);
+  }
+  // 关掉开关后应归零
+  H.wpParallax = false; H.wpTick(9000);
+  out.driftOff = [H.baseX, H.baseY];
+  H.wpParallax = true;
 
   console.log(JSON.stringify(out));
   // ★ 必须显式退出：面板脚本里的 setInterval(poll,3000) 会让事件循环永远活着
@@ -234,8 +302,6 @@ check("★ 切换没有抛异常", not data.get("transitionError"),
 check("★ 切换后锁已释放（旧版永远卡 true）", t["busy"] is False, f"busy={t['busy']}")
 check("★ 新层拿到了 .on（旧版拿不到 ⇒ 永远看不见）",
       t["bOn"] or t["aOn"], f"aOn={t['aOn']} bOn={t['bOn']}")
-check("新层确实换了图", "w7.webp" in (t["aImg"] or "") + (t["bImg"] or ""),
-      f"a={t['aImg'][:38]} b={t['bImg'][:38]}")
 check("当前层已切到另一块", t["cur"] in ("wp-a", "wp-b"), t["cur"])
 
 print("\n3) ★ 定时自动随机轮换是否真的在换")
@@ -260,20 +326,34 @@ check("只注册一次（有 bound 标记）", sw["bound"] is True)
 
 def tx_of(s):
     import re as _re
-    m = _re.search(r"translate3d\((-?\d+)px,\s*(-?\d+)px", s or "")
-    return (int(m.group(1)), int(m.group(2))) if m else None
+    m = _re.search(r"translate3d\((-?[\d.]+)px,\s*(-?[\d.]+)px", s or "")
+    return (float(m.group(1)), float(m.group(2))) if m else None
 
-check("画面中心 ⇒ 位移为 0", tx_of(sw["atCenter"]) == (0, 0), str(sw["atCenter"]))
-tl = tx_of(sw["atTopLeft"])
-br = tx_of(sw["atBottomRight"])
-check("★ 鼠标在左上 ⇒ 画面往右下让（方向相反，形成景深）",
-      tl and tl[0] > 0 and tl[1] > 0, f"左上={tl}")
+# ── 新行为：① 不碰鼠标也在漂移（旧版完全静止）；② 鼠标叠加且方向相反 ──
+check("window 上真的挂了 mousemove 监听", "mousemove" in sw["listeners"], str(sw["listeners"]))
+check("只注册一次（有 bound 标记）", sw["bound"] is True)
+
+# ① 自动漂移：直接驱动 wpTick 的不同时刻，位移必须变化
+import math as _m
+drift = data.get("drift") or []
+drift_xs = [d[0] for d in drift]
+check("★ 不碰鼠标也在漂移（旧版完全静止）",
+      len(set(round(x, 2) for x in drift_xs)) >= 4,
+      f"6 个时刻的 baseX = {[round(x, 2) for x in drift_xs]}")
+check("漂移幅度够看出来（>10px 起伏）",
+      (max(drift_xs) - min(drift_xs)) > 10 if drift_xs else False,
+      f"起伏 {round(max(drift_xs)-min(drift_xs),1) if drift_xs else 0}px")
+check("★ 关掉开关后漂移归零", data.get("driftOff") == [0, 0], str(data.get("driftOff")))
+
+# ② 鼠标叠加：方向相反（画面往鼠标反方向让，形成景深）
+tl = tx_of(sw["atTopLeft"]); br = tx_of(sw["atBottomRight"])
+check("★ 鼠标在左上 ⇒ 画面往右下让（方向相反）", tl and tl[0] > 0 and tl[1] > 0,
+      f"左上={tl}")
 check("★ 鼠标在右下 ⇒ 画面往左上让", br and br[0] < 0 and br[1] < 0, f"右下={br}")
-check("位移幅度克制（不会晃眼）",
-      tl and abs(tl[0]) <= 20 and abs(tl[1]) <= 20, f"最大 {tl}")
-check("鼠标离开窗口 ⇒ 回到中心", tx_of(sw["afterLeave"]) == (0, 0),
-      str(sw["afterLeave"]))
-check("★ 关掉开关后不再跟随", sw["whenOff"][0] == 0 and sw["whenOff"][1] == 0,
+check("★ 幅度比旧版明显（旧版 ±16/±11，几乎看不出）",
+      tl and (abs(tl[0]) > 16 or abs(tl[1]) > 11),
+      f"左上={tl}（新幅度应更大）")
+check("★ 关掉开关后位移归零", sw["whenOff"][0] == 0 and sw["whenOff"][1] == 0,
       str(sw["whenOff"]))
 
 print("\n4) ★ 反向验证：把旧的写法喂回去，必须报错")

@@ -436,19 +436,21 @@
       "wallpaper_effect": {
         "type": "string",
         "name": "Transition effect",
-        "default": "ink",
+        "default": "random",
         "options": [
-          "ink",
-          "ink_soft",
-          "burn",
-          "fade",
-          "none"
+          "random",
+          "iris",
+          "wipe",
+          "blinds",
+          "shutter",
+          "zoom",
+          "ink"
         ],
-        "hint": "ink = colour bleed from a random point each time (default); ink_soft = gentle bleed; burn = scorch-open with a warm rim; fade = plain crossfade; none = instant.",
+        "hint": "random = a different reveal each time (default): iris, wipe, blinds, shutter, zoom or ink. Or pin one: iris = circle opens from a random point; wipe = a lit edge sweeps across; blinds = horizontal bands; shutter = vertical slats opening from the middle; zoom = dolly push; ink = irregular bleed.",
         "locales": {
           "zh": {
             "name": "切换特效",
-            "hint": "ink=晕染（墨渗，每次随机中心，默认）；ink_soft=柔和晕染；burn=燃开（带暖色焦痕）；fade=普通淡入淡出；none=直接切换。"
+            "hint": "random=每次随机换一种（默认）：虹膜／斜擦／百叶／中开／推镜／墨渗。也可以固定一种 —— 虹膜=圆形从随机位置张开；斜擦=一道发光前沿横扫；百叶=横向条带展开；中开=竖向板从中缝打开；推镜=镜头推进；墨渗=不规则渗开。"
           }
         }
       },
@@ -457,14 +459,16 @@
         "default": true,
         "locales": {
           "zh": {
-            "name": "跟随鼠标的轻微晃动",
-            "hint": "壁纸会随鼠标位置做很轻微的位移，配合缓慢的呼吸式缩放，像画面有景深在浮动（伪 live2D 感）。关掉就完全静止。系统开启「减少动态效果」时自动停用。"
+            "name": "壁纸晃动（自动漂移 + 跟随鼠标）",
+            "hint": "壁纸会持续自行漂移（不必移动鼠标），并叠加缓慢的呼吸式缩放；鼠标或手指移动时再叠一层反向位移，像画面有景深。关掉即完全静止。系统开启「减少动态效果」时自动停用。"
           },
           "en": {
             "name": "Subtle parallax with the cursor",
             "hint": "The wallpaper drifts slightly with the cursor, plus a very slow breathing zoom, so the scene feels like it has depth. Turn off for a completely still background. Disabled automatically under prefers-reduced-motion."
           }
-        }
+        },
+        "name": "Wallpaper drift + cursor parallax",
+        "hint": "The wallpaper drifts slowly on its own (no cursor needed) with a breathing zoom; moving the cursor or finger adds a further opposite offset, so the scene feels like it has depth. Turn off for a completely still background. Disabled automatically under prefers-reduced-motion."
       },
       "wallpaper_interval": {
         "type": "integer",
@@ -487,6 +491,30 @@
           "zh": {
             "name": "参与轮换的壁纸（留空=全部）",
             "hint": "在侧边栏面板的缩略图里点选。只选 1 张 = 不轮换（固定显示）。留空则全部参与轮换。"
+          }
+        }
+      },
+      "wallpaper_splash": {
+        "type": "switch",
+        "name": "Opening animation on page load",
+        "default": true,
+        "hint": "Every time the panel opens: a randomly picked wallpaper animates in, the plugin name 'KIRA BOOST' reveals with a random effect, and the line 'KiraAI Accelerator' appears underneath. Click anywhere to skip.",
+        "locales": {
+          "zh": {
+            "name": "进入页面时的开屏动画",
+            "hint": "每次打开面板：随机一张壁纸以随机特效入场，「KIRA BOOST」以随机方式显现，下方浮出 KiraAI Accelerator。点任意处可跳过。默认：开。"
+          }
+        }
+      },
+      "wallpaper_splash_motto": {
+        "type": "switch",
+        "name": "Show an English motto during the opening",
+        "default": true,
+        "hint": "Show one of twelve English mottos about speed and streaming, beside the wallpaper. Turn off to keep only the wallpaper and the name.",
+        "locales": {
+          "zh": {
+            "name": "开屏时显示英文箴言",
+            "hint": "从 12 句关于「速度／流式」的英文箴言里随机取一句，配合壁纸显示。关掉则只保留壁纸与名称。默认：开。"
           }
         }
       }

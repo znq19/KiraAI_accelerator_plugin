@@ -30,7 +30,9 @@ check("使用 Math.random 选下一张", "Math.random() * wpActive.length" in ht
 check("有避免连续重复的循环", "while (wpActive[next] === cur" in html)
 check("不再用顺序 (wpIdx + 1) 递增", "wpIdx = (wpIdx + 1) % wpActive.length" not in html)
 check("只有 1 张时提前返回（不轮换）", "if (wpActive.length < 2 || wpIntervalS <= 0) return;" in html)
-check("定时器里对 <=1 张做保护", "if (wpActive.length <= 1) return;" in html)
+# ★ 行为升级（2026-09-23）：定时器里现在还要求"不在切换中"（wpBusy），
+#   否则会和正在飞的切换抢图层。
+check("定时器里对 <=1 张做保护", "if (wpActive.length <= 1 || wpBusy) return;" in html)
 
 
 print("\n2) 行为模拟：按面板里的算法跑，验证分布与去重")
@@ -95,13 +97,24 @@ if pv:
           "减少动态效果" in hint or "reduced-motion" in hint.lower(), hint[:70])
 
 check("面板有 applySway / initParallax", "function applySway" in html and "function initParallax" in html)
-check("★ 位移方向与鼠标相反（有景深感）", "-nx * RX" in html and "-ny * RY" in html)
+# ★ 行为升级（2026-09-23，用户反馈"晃动没感觉"）：
+#   ① 不再只跟鼠标 —— 壁纸**持续自行漂移**（不碰鼠标也在动）
+#   ② 幅度从 16/11 提到 34/24
+check("★ 有自动漂移（不碰鼠标画面也在动）", "function wpTick" in html and "baseX = Math.sin" in html)
+check("★ 跟随鼠标的方向与鼠标相反（形成景深）",
+      "-((x / window.innerWidth) * 2 - 1) * RX" in html.replace("\n", " ").replace("  ", " ")
+      or "aimX = -((x / window.innerWidth) * 2 - 1) * RX" in html)
+check("★ 幅度比旧版明显（旧版 16/11 几乎看不出）", "const RX = 34, RY = 24;" in html)
 check("★ 开关在事件里实时判断（改配置即时生效）", "if (!wpParallax) return;" in html)
 check("监听只注册一次（不会重复叠加）", "parallaxBound" in html)
 check("★ reduced-motion 下停用", "animation:none!important" in html.replace(" ", "")
       and "transform:none!important" in html.replace(" ", ""))
 check("切换时保留位移（复位后补回）", html.count("applySway();") >= 3, f"{html.count('applySway();')} 次")
-check("过渡包含 transform（位移不会跳）", "transform .9s" in html)
+# ★ 行为升级：位移与过渡特效现在是**分元素**写的（.wp-stage 写位移、.wp-img 写特效），
+#   所以判据从"某条 transition 里含 transform"改成"结构上确实分了层"。
+check("★ 位移与特效分层（不再互相覆盖 inline transform）",
+      ".wp-stage{" in html and ".wp-img{" in html and "function applySway" in html)
+check("★ 过渡用 Web Animations（可读回实际值，便于自检）", "el.animate(" in html or "E(to, [" in html or "animate(kf" in html)
 
 print("\n5) ★ 文档与实物一致（数字最容易漂）")
 import re as _re
