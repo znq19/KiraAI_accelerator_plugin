@@ -137,11 +137,15 @@ async def main():
     print("\n4) 没有上下文时必须报错，而不是退回实例变量")
     err = None
     try:
-        await p._emit_segment("<msg>无上下文</msg>", None)
+        ret = await p._emit_segment("<msg>无上下文</msg>", None)
     except Exception as e:  # noqa: BLE001
         err = type(e).__name__
-    check("★ ctx=None 会抛错（不允许静默用实例变量）", err is not None, str(err))
-    check("抛错时没有发出任何东西", len(mp.sent) == 2, f"{len(mp.sent)} 条")
+    # ★ 行为升级（2026-09-23）：上下文不完整时**返回 False 而不是抛异常**。
+    #   因为发送层现在按返回值判"有没有投递"；抛异常会冒到引擎里，
+    #   把"没投递"和"投递后杂事失败"混在一起（后者会导致重复发送）。
+    #   判据的重点没变：**绝不能静默改用实例变量把消息发到别的会话**。
+    check("★ ctx=None 时返回 False（明确表示没投递）", ret is False, f"ret={ret!r} err={err}")
+    check("ctx=None 时没有发出任何东西", len(mp.sent) == 2, f"{len(mp.sent)} 条")
 
     print("\n5) 节奏时间戳按会话分开（并发下互不干扰）")
     mp3 = FakeMP()

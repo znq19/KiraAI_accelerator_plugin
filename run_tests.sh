@@ -54,6 +54,9 @@ run "★接管点精确还原"         tests/test_patch_restore.py
 run "★记忆落盘优化"           tests/test_memory_dump.py
 run "★抢发后的消息ID对齐"     tests/test_early_sent_alignment.py
 run "★抢发交接处的节奏"       tests/test_pacing_handoff.py
+run "★重复发送：回退策略"     tests/test_dup_send_guard.py
+run "★重复发送：全链路"       tests/test_dup_send_e2e.py
+
 run "前端URL前缀守卫"         tests/test_frontend_api.py
 run "★真框架API集成"          tests/test_real_api.py
 run "★代理类型透传"           tests/test_proxy_isinstance.py
