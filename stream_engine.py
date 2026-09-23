@@ -218,6 +218,22 @@ class StreamEngine:
             "elapsed_s": resp.time_consumed,
         }
         resp.__dict__["_accel_stats"] = stats
+
+        # ★★ 把"哪些段已抢先发出"写进响应 —— **发送层的主判据**。
+        #   踩过的坑（用户实测："响应标记缺失，改用本轮台账剥离"每句都报）：
+        #     mark_early_sent() 写在 early_sent.py 里，但**从来没有任何地方调用它**，
+        #     ⇒ 标记永远是 0 ⇒ 每次剥离都走"标记缺失 → 台账兜底"这条告警路径。
+        #     结果两条：① 日志刷屏；② 主路径（标记优先）根本没被跑过。
+        #   所以在这里直接写，不再依赖一个没人调用的辅助函数。
+        #   ⚠️ 这里以前写的是 `full_text` —— 那个变量在本函数里**不存在**
+        #      ⇒ 每次抢发都抛 NameError ⇒ 标记写不进去 ⇒ 发送层只能走台账兜底
+        #      并逐条告警（用户实测："响应标记缺失…"每句都发，刷屏）。
+        #      正确做法：用 resp.text_response（它就是模型的完整输出，我们从不改写它）。
+        _segs = list(emitter.emitted) if emitter else []
+        if _segs:
+            resp.__dict__["_accel_early_sent_count"] = len(_segs)
+            resp.__dict__["_accel_early_sent_segments"] = _segs
+            resp.__dict__["_accel_full_text"] = resp.text_response
         self.stats = stats
         if self.on_complete is not None:
             try:

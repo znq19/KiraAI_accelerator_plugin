@@ -274,6 +274,8 @@ class AcceleratorPlugin(BasePlugin):
         # 仅供面板展示"最近一次判定属于哪个会话"，功能路径一律用 req 上的 SendCtx
         self._current_sid = sid_now
         req.__dict__["_accel_ctx"] = SendCtx(sid_now, event, tag_set)
+        # ★ 新一轮开始 ⇒ 清掉该会话的抢发台账（否则上一轮的残留会让本轮**多切**=丢内容）
+        self._reset_turn_ledger(sid_now)
 
         if self.thinking_enabled and sid_now:
             decision = self.thinking.decide(sid_now, req)
@@ -512,6 +514,20 @@ class AcceleratorPlugin(BasePlugin):
         except Exception:  # noqa: BLE001
             logger.exception("[accel] 广播 AFTER_XML_PARSE 失败（按未改写的内容发送）")
         return actions
+
+    def _reset_turn_ledger(self, sid: str) -> None:
+        """**每轮开始时**清掉该会话的抢发台账。
+
+        ★ 为什么必须清（这是个真实隐患，不是洁癖）：
+          台账原来按 sid 累加且**从不清零**。如果某一轮"抢发了但没走到
+          send_xml_messages"（事件被 stop、或中途换轮），残留值就会让**下一轮
+          多切**若干段 ⇒ **丢内容**（比重复发送更糟）。
+        """
+        if sid:
+            try:
+                self._sent_ledger.pop(sid, None)
+            except Exception:  # noqa: BLE001
+                pass
 
     async def _emit_segment(self, seg: str, ctx: "SendCtx" = None) -> bool:
         """把一段已闭合的 <msg> 真正发出去，并补广播 ON_MESSAGE_SENT。

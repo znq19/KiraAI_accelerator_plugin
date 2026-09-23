@@ -383,6 +383,13 @@ select{appearance:none;background-image:none;cursor:pointer}
       <feFuncA type="discrete" tableValues="0 0.55 1"/>
     </feComponentTransfer>
   </filter>
+  <!-- ★ 墨渗实际显示的载体：SVG 里一张全屏 <image>，用**原生 SVG mask**。
+       为什么不用 HTML 元素的 CSS `mask-image: url(#…)`：
+       Chromium 对"把 SVG mask 当 CSS mask 用在 HTML 元素上"支持不完整
+       ⇒ 遮罩没生效 ⇒ 新图**瞬间全亮**（用户实测："跟瞬间出现一样"）。 -->
+  <image id="wpInkImg" x="0" y="0" width="100%" height="100%"
+         preserveAspectRatio="xMidYMid slice"
+         mask="url(#wpInkMask)" style="display:none"/>
 </svg>
 
 <!-- 开屏：随机壁纸 + 随机入场特效 + 随机英文名特效 + 随机箴言 -->
@@ -1361,77 +1368,72 @@ function fxZoom(to, from){
 function fxInk(to, from, rim){
   /* 墨渗：像墨滴落在宣纸上，**随机的纹路**往外散开（不是圆）。
 
-     遮罩的 alpha 来自分形噪声，我们逐帧抬高它的**偏置**：
-       bias 低 ⇒ 只有噪声最高的零星几点透出（一滴墨）
+     实现：SVG 里一张全屏 <image>（#wpInkImg），带**原生 SVG mask**。
+     遮罩 alpha 来自两层分形噪声，我们逐帧抬高 feColorMatrix 的**偏置**，
+     可透区就从"零星几点"长到"整张铺满"：
+       bias 低 ⇒ 只有噪声最高的几点透出（一滴墨）
        bias 升 ⇒ 斑块连成片、丝缕散开（墨晕）
        bias 高 ⇒ 整张透出（新图铺满）
-     不透明区域的形状是**噪声的形状** ⇒ 不规则、有丝缕，不是圆。
+     不透明区的形状**就是噪声的形状** ⇒ 不规则、有丝缕，不是圆。
 
-     ★ 不能用 CSS transition：feColorMatrix 的 values 不是可插值的 CSS 属性，
-       所以用 rAF 手推。 */
+     ★ 旧图**不做淡出**：保持可见，由"墨"一点点盖上去 —— 这才是
+       "上一张被下一张吃掉"的观感（用户明确要的）。
+
+     ★ 不能用 CSS transition：feColorMatrix 的 values 不是可插值属性，用 rAF 手推。 */
   const dur = Math.round(WP_DUR * 1.15);
-  const cx = 26 + Math.random() * 48, cy = 26 + Math.random() * 48;
+  const BIAS0 = -0.58, BIAS1 = 0.30;     // 由"一粒墨"到"整张铺满"
+  const cm  = document.getElementById("wpInkCM");
+  const n1  = document.getElementById("wpInkN1");
+  const n2  = document.getElementById("wpInkN2");
+  const img = document.getElementById("wpInkImg");
+  if (!cm || !img) return;                 // 拿不到就退化为普通显示（不崩）
 
-  const cm = document.getElementById("wpInkCM");
-  const n1 = document.getElementById("wpInkN1");
-  const n2 = document.getElementById("wpInkN2");
-
-  // 每次换种子 ⇒ 纹路不重复（用户要的"很随机"）
   if (n1) n1.setAttribute("seed", String(1 + Math.floor(Math.random() * 999)));
   if (n2) n2.setAttribute("seed", String(1 + Math.floor(Math.random() * 999)));
 
   const setBias = (b) => {
-    if (!cm) return;
     cm.setAttribute("values",
       "0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.55 0.35 0.10 0 " + b.toFixed(3));
   };
 
-  to.style.maskImage = "url(#wpInkMask)";
-  to.style.webkitMaskImage = "url(#wpInkMask)";
-  to.style.maskRepeat = "no-repeat";
-  to.style.webkitMaskRepeat = "no-repeat";
-  to.style.maskPosition = "0 0";
-  to.style.webkitMaskPosition = "0 0";
-  to.style.maskSize = "100% 100%";
-  to.style.webkitMaskSize = "100% 100%";
+  // 新层本体隐藏 —— 由 #wpInkImg（带遮罩）负责显示
+  to.style.opacity = "0";
+  const url = (to.style.backgroundImage.match(/url\("?([^")]+)"?\)/) || [])[1] || "";
+  if (url){
+    img.setAttribute("href", url);
+    img.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", url);
+  }
+  img.style.display = "";
 
-  const BIAS0 = -0.58, BIAS1 = 0.30;      // 由"一粒墨"到"整张铺满"
-  const ease = p => p * p * (3 - 2 * p);  // smoothstep：起步/收尾都软
-  let raf = 0, stopped = false, t0 = 0;
-  const step = (now) => {
-    if (stopped) return;
-    if (!t0) t0 = now;
-    const p = Math.min(1, (now - t0) / dur);
-    setBias(BIAS0 + (BIAS1 - BIAS0) * ease(p));
+  setBias(BIAS0);
+  const t0 = performance.now();
+  let raf = 0;
+  const ease = (p) => p * p * (3 - 2 * p);       // smoothstep
+  const step = () => {
+    const p = Math.min(1, (performance.now() - t0) / dur);
+    //  由 BIAS0（一粒墨）走到 BIAS1（铺满）
+    setBias(BIAS0 + (BIAS1 - BIAS0) * ease(p) * 1.658);
     if (p < 1) raf = requestAnimationFrame(step);
+    else img.style.display = "none";
   };
   raf = requestAnimationFrame(step);
 
-  anim(to, [{transform:"scale(1.06)"},{transform:"scale(1)"}],
-       {duration:dur, easing:"cubic-bezier(.33,0,.67,1)"});
+  // 旧层保持可见（被墨吃掉），只做极轻微推近
+  anim(from, [{transform:"scale(1)"},{transform:"scale(1.03)"}],
+       {duration:dur, easing:"linear"});
 
   if (rim){
-    rim.style.background = `radial-gradient(circle at ${cx}% ${cy}%,`
-      + " transparent 30%, rgba(255,232,246,.85) 40%,"
-      + " rgba(139,124,255,.40) 52%, transparent 66%)";
-    anim(rim, [{opacity:0, transform:"scale(.35)"},{opacity:1, offset:.35},
-               {opacity:1, offset:.72},{opacity:0, transform:"scale(3.0)"}],
-         {duration:dur, easing:"cubic-bezier(.33,0,.67,1)"});
+    rim.style.background = "radial-gradient(circle at 50% 50%, transparent 42%,"
+      + " rgba(255,226,244,.7) 50%, rgba(139,124,255,.32) 58%, transparent 66%)";
+    anim(rim, [{opacity:0, transform:"scale(.5)"},
+               {opacity:1, offset:.4}, {opacity:1, offset:.65},
+               {opacity:0, transform:"scale(2.4)"}],
+         {duration:dur, easing:"cubic-bezier(.34,0,.66,1)"});
   }
-
-  // 旧图"被吃掉"
-  anim(from, [{opacity:1, transform:"scale(1)", filter:"blur(0px) saturate(1)"},
-              {opacity:0, transform:"scale(1.05)", filter:"blur(7px) saturate(.55)"}],
-       {duration:dur, easing:"cubic-bezier(.4,0,.6,1)"});
-
   return () => {
-    stopped = true;
-    if (raf) cancelAnimationFrame(raf);
-    to.style.maskImage = to.style.webkitMaskImage = "";
-    to.style.maskRepeat = to.style.webkitMaskRepeat = "";
-    to.style.maskPosition = to.style.webkitMaskPosition = "";
-    to.style.maskSize = to.style.webkitMaskSize = "";
-    setBias(-0.58);                        // 复位，别影响下一次
+    cancelAnimationFrame(raf);
+    img.style.display = "none";
+    setBias(BIAS0);
   };
 }
 
@@ -1652,7 +1654,9 @@ function playSplash(){
   try {
     _playSplash();
   } catch (e) {
-    console.error("[accel] 开屏动画失败，已直接收掉", e);
+    /* ★ 以前这里只 console.error 一句就收掉，结果"没有开屏"完全看不出原因。
+       现在把**出错位置与信息**都打出来（用户能直接反馈，便于定位）。 */
+    console.error("[accel] 开屏内容填充失败（开屏本身仍会显示并自动收尾）：", e && e.message, e && e.stack);
     try { finishSplash(); } catch (_) {}
   }
 }
@@ -1721,11 +1725,15 @@ function _playSplash(){
   }
 
   // 主标题：随机一套入场特效
-  const L = buildWordmark();
+  let L = [];
+  try { L = buildWordmark(); }
+  catch (e) { console.error("[accel] 开屏：构建标题失败（跳过标题特效）", e); }
   // ★ 先取特效名，再用它去映射里取函数 —— 不能写成
   //   rand(WM_FX)(WM_FX_FN)(L)（那等于调用字符串，会抛 TypeError，
   //   而且异常发生在显示之后 ⇒ 开屏卡死）
-  if (L.length) WM_FX_FN[rand(WM_FX)](L);
+  try {
+    if (L.length) WM_FX_FN[rand(WM_FX)](L);
+  } catch (e) { console.error("[accel] 开屏：标题特效失败", e); }
   const line = document.getElementById("spLine");
   if (line) line.animate([{width:"0"},{width:"46%"}],
     {duration:900, delay:520, easing:"ease-out", fill:"backwards"});
@@ -1738,7 +1746,10 @@ function _playSplash(){
       mEl.dataset.txt = txt;
       mEl.textContent = txt;
       mEl.style.opacity = "";                    // 先恢复可见（type 特效自己会控）
-      after(780, () => MOTTO_FX_FN[rand(MOTTO_FX)](mEl));
+      after(780, () => {
+        try { MOTTO_FX_FN[rand(MOTTO_FX)](mEl); }
+        catch (e) { console.error("[accel] 开屏：箴言特效失败", e); }
+      });
     }
   }
 
