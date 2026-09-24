@@ -624,8 +624,17 @@ check("★ 只在已连接时出现（.status.ok 控制）",
       ".status.ok .ecg-sweep" in HTML and ".status.err .ecg" in HTML)
 check("★ 默认不可见（.ecg-sweep 基础 opacity:0）",
       re.search(r"\.ecg-sweep\{[^}]*opacity:0", HTML) is not None)
-check("★ 减少动效下不扫但仍可见（不消失）",
-      re.search(r"prefers-reduced-motion[\s\S]{0,400}\.status\.ok \.ecg-sweep\{animation:none", HTML) is not None)
+# ★★★ 这条判据**反转了**（旧版断言"减少动效下不扫"）。
+# 实测：Android 省电模式会置 reduce，而用户明确要求"像声纹那样动和呼吸"
+# ⇒ 旧行为等于把用户要的特效**静默关掉**，用户报「只是保持常亮」就是这个。
+# 正确：reduce 下**保留扫描**（低频平滑推移，不是闪频刺激），只放慢。
+_nc2 = re.sub(r"/\*[\s\S]*?\*/", "", HTML)
+_sw2 = re.search(r"prefers-reduced-motion[\s\S]{0,400}?\.ecg-sweep\{([^}]*)\}", _nc2)
+check("★★★ 减少动效下**仍然在扫**（用户要的动效不得被静默关掉）",
+      bool(_sw2) and "animation:none" not in (_sw2.group(1) if _sw2 else "animation:none"),
+      (_sw2.group(1)[:60] if _sw2 else "未定位"))
+check("★ 减少动效下波形仍可见（不消失）",
+      bool(_sw2) and "opacity" in _sw2.group(1) or ".status.ok .ecg-track" in _nc2)
 
 print()
 print("═══ 23) ★★ 空闲欣赏模式：UI 藏、品牌字与连接状态**必须留**")
@@ -1042,6 +1051,49 @@ check("★★ 波形尺寸够大（≥80×20 —— 原来 56×16 肉眼看不�
 check("★★ 「已连接」下是**无限循环**（持续动，不只在某一状态闪一下）",
       re.search(r"\.status\.ok \.ecg-sweep\{[^}]*animation:[^;]*infinite", HTML) is not None)
 check("★ 有过峰闪光（心跳感）", "ecgSpark" in HTML)
+
+# ── ★★ 声纹式动（用户要求「像声纹那样动和呼吸」）──
+check("★★ 有主波形层 .ecg-wave（整条在动，不只是扫描线）",
+      'class="ecg-wave"' in HTML and ".ecg-wave{" in HTML)
+check("★★ 有呼吸关键帧 ecgBreath（scaleY 起伏 = 声纹包络）",
+      "@keyframes ecgBreath" in HTML and "scaleY" in HTML)
+check("★★ 有流动关键帧 ecgFlow（亮度/粗细脉动）",
+      "@keyframes ecgFlow" in HTML)
+check("★★ 底轨也在呼吸（ecgTrackBreath），不是写死常量",
+      "@keyframes ecgTrackBreath" in HTML)
+check("★★ SVG 内缩放用 transform-box:fill-box（否则波形会整条跑位）",
+      "transform-box:fill-box" in HTML)
+check("★ 三层都禁用非等比描边缩放（vector-effect）",
+      "vector-effect:non-scaling-stroke" in HTML)
+
+# ── ★★ 「已连接」不要底板（用户要求）──
+_m = re.search(r'\.status\s*\{[^}]*position:fixed[^}]*\}', HTML)
+_st = _m.group(0) if _m else ""
+check("★★ 「已连接」无底板（无背景/边框/模糊/投影）",
+      not any(k in _st for k in ("background:rgba", "backdrop-filter",
+                                 "border:1px", "box-shadow")),
+      _st.replace("\n", " ")[:90])
+
+# ── ★★ 进出欣赏模式要柔和（过渡写基础规则，不是写在 body.zen 上）──
+_nc = re.sub(r'/\*[\s\S]*?\*/', '', HTML)
+check("★★ 过渡写在**基础规则**上（退出 zen 时选择器仍匹配 ⇒ 双向柔和）",
+      re.search(r'\.shell > \.dock,\s*\n\.shell > header > \.brand > div,', _nc) is not None)
+check("★★ 过渡**不写在** body.zen 上（那是「进入有、退出没有」硬切的根因）",
+      "body.zen .shell > .tagline{transition" not in _nc)
+
+# ── ★★★ reduced-motion 不得误杀用户要的特效 ──
+# 实测教训：Android 省电模式会置 reduce，而旧代码在那里把动画整体关掉
+# ⇒ 用户报「心电图只是常亮」「小字特效没生效」，两个现象同一个根因。
+_rm_tag = re.search(r"@media \(prefers-reduced-motion:reduce\)\{"
+                    r"(?:(?!\}|@media)[\s\S])*?\.tagline[^{]*\{[^}]*\}", _nc)
+check("★★★ 小字在 reduced-motion 下**保留动画**（不得 animation:none）",
+      bool(_rm_tag) and "animation:none!important" not in _rm_tag.group(0))
+_sw = re.search(r"@media \(prefers-reduced-motion:reduce\)\{"
+                r"(?:(?!\}|@media)[\s\S])*?\.ecg-sweep\{([^}]*)\}", _nc)
+check("★★★ ECG 在 reduced-motion 下**保留扫描**（不得 animation:none）",
+      bool(_sw) and "animation:none" not in _sw.group(1))
+check("★★★ 没有用 duration:.01ms 糊弄（那等于静态）",
+      "0.01ms" not in _nc)
 check("★ 用 non-scaling-stroke（缩放后线不变细）",
       "vector-effect:non-scaling-stroke" in HTML)
 check("★ 未连接时不显示（.status.err .ecg）",
