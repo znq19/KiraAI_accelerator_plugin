@@ -164,6 +164,40 @@ body.zen .hud{opacity:1;pointer-events:auto}
   width:92px;height:22px;flex:none;margin-left:8px;
   overflow:visible;pointer-events:none;
 }
+/* ★★★ 声纹式动的三层结构（用户要求"像声纹那样动和呼吸"）：
+   L1 track 淡底（呼吸）→ L2 wave 主波形（起伏+亮度脉动）→ L3 sweep 扫描线。
+   ⚠️ SVG 里做 transform 必须 `transform-box:fill-box`，
+      否则 scaleY 以 viewBox 原点为基准，波形会整条跑位而不是原地呼吸。 */
+.ecg-track,.ecg-wave,.ecg-sweep,.ecg-spark{
+  transform-box:fill-box;transform-origin:center;
+  vector-effect:non-scaling-stroke;
+}
+/* L2 主波形：整条上下起伏 + 亮度脉动 = 声纹感 */
+.ecg-wave{
+  stroke:var(--mint);stroke-width:2.2;opacity:0;
+  fill:none;stroke-linecap:round;stroke-linejoin:round;
+}
+.status.ok .ecg-wave{
+  opacity:.9;
+  animation:ecgBreath 2.6s ease-in-out infinite, ecgFlow 1.9s ease-in-out infinite;
+  filter:drop-shadow(0 0 4px rgba(94,240,192,.55));
+}
+/* 呼吸：整条波形在幅度上起伏（像声纹的包络） */
+@keyframes ecgBreath{
+  0%,100%{transform:scaleY(.62)}
+  50%    {transform:scaleY(1.12)}
+}
+/* 流动：亮度与粗细的脉动，让"在传输"的感觉持续存在 */
+@keyframes ecgFlow{
+  0%,100%{opacity:.55;stroke-width:2}
+  50%    {opacity:1;stroke-width:2.8}
+}
+/* L1 淡底也跟着呼吸一点，整块区域是"活"的 */
+.ecg-track{animation:ecgTrackBreath 2.6s ease-in-out infinite}
+@keyframes ecgTrackBreath{
+  0%,100%{opacity:.38}
+  50%    {opacity:.72}
+}
 /* 窄屏：固定药丸不能压到左侧品牌字 ⇒ ECG 收窄、字号略降 */
 @media (max-width:560px){
   .ecg{width:58px;height:18px;margin-left:6px}
@@ -197,6 +231,8 @@ body.zen .hud{opacity:1;pointer-events:auto}
    而 `forwards` 会一直把 opacity 保持为 1 ⇒ 面板永远不会淡出（用户实测：
    "10 秒后并不是除了标题和已连接其他都消失，UI 面板全部都还在"）。
    设 `animation:none` 之后，下面的 `opacity:0` 才是最终生效值。 */
+/* ★ 让进出更柔和：除了透明度，再加一点极轻的上浮/下沉位移，
+   观感上"面板缓缓退开"而不是"啪一下没了"。 */
 body.zen .shell > section,
 body.zen .shell > .tagline,
 body.zen .dock,
@@ -210,8 +246,13 @@ body.zen .shell > .wordmark,
 body.zen .shell > header > .status{opacity:1!important;pointer-events:auto}
 /* wordmark 的逐字入场动画同样会压过声明 —— 但它是"要保留"的，不用动它；
    这里只是说明：`.card` 那条**必须**停，否则藏不掉。 */
-body.zen .shell > section,
-body.zen .shell > .tagline{transition:opacity .9s cubic-bezier(.4,0,.2,1)}
+/* ★★★ 过渡必须写在**基础规则**上，不能写在 `body.zen` 上：
+   写在 zen 上 ⇒ 退出时 `body.zen` 已被移除、选择器不再匹配
+   ⇒ **过渡声明一起消失** ⇒ 直接跳变（用户报的"不柔和"就是这个）。
+   放这里 ⇒ 进入/退出两侧都匹配 ⇒ 双向都有 0.9s 过渡。 */
+.shell > section,
+.shell > .tagline,
+.shell > .dock,
 .shell > header > .brand > div,
 .shell > header > .brand > .mark,
 .shell > header > .status,
@@ -447,10 +488,25 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
 
 /* 减少动效：**不靠动画做可见性** —— 字一律回到可读的 --dim */
 @media (prefers-reduced-motion:reduce){
-  .tagline,.tagline .tlw{animation:none!important;
+  /* ★★★ 这里**不能**把动画整体关掉。
+     用户明确要求这行小字「有明显的持续的和随机变化的特效」，
+     而 Android 省电模式/开发者选项会把这个媒体查询置为 true ⇒
+     原来的 `animation:none!important` 会把用户要的特效**静默关掉**
+     （实测：用户报「小字特效并没有生效」，就是这一条干的）。
+     正确取舍：**保留"持续、低幅度"的动**（呼吸/波浪这类缓慢起伏，
+     不属于闪频刺激），只压掉**大位移**与会把字变透明的花活。 */
+  .tagline,.tagline .tlw{
     color:var(--dim)!important;-webkit-text-stroke:0!important;
-    background:none!important;filter:none!important;opacity:1!important}
+    background:none!important;opacity:1!important}
+  /* 大幅横向漂移 + 背景裁切（会让字变透明）⇒ 压掉 */
+  .tagline.tag-drift{animation:none!important;filter:none!important}
+  .tagline.tag-aurora{animation:none!important;background:none!important}
   .tagline.tag-aurora .tlw{color:var(--dim)!important}
+  /* 波浪：幅度减半、放慢（保留"在呼吸"的观感） */
+  .tagline.tag-wave .tlw{animation-duration:4.6s!important}
+  /* 呼吸/闪烁：放慢，保留 */
+  .tagline.tag-glow{animation-duration:5.2s!important}
+  .tagline.tag-blink .tlw{animation-duration:5.8s!important}
 }
 
 /* ── 卡片 ── */
@@ -685,12 +741,10 @@ select{appearance:none;background-image:none;cursor:pointer}
 .status        {font-size:11.5px;color:var(--dim2);display:flex;align-items:center;gap:5px;
   position:fixed;top:16px;right:16px;z-index:41;
   transition:top .5s cubic-bezier(.4,0,.2,1);
-  padding:5px 11px 5px 9px;border-radius:999px;
-  background:rgba(10,11,18,.52);
-  backdrop-filter:blur(12px) saturate(120%);
-  -webkit-backdrop-filter:blur(12px) saturate(120%);
-  border:1px solid var(--edge);
-  box-shadow:0 2px 14px rgba(0,0,0,.4)}
+  /* ★★★ 不要底板（用户明确要求）：无背景、无边框、无模糊、无投影。
+     只留图标 + 文字 + 心电图；靠 text-shadow 保证在壁纸上仍可读。 */
+  padding:2px 2px 2px 0;
+  text-shadow:0 1px 3px rgba(0,0,0,.85),0 1px 12px rgba(0,0,0,.6)}
 /* ★★ zen（欣赏模式）下 HUD 出现在视口右上 ⇒ 「已连接」让到它**下方**。
    ⚠️ 这里**不写死像素**：HUD 的高度由它的行数/字号决定，写死会在
    "以后给 HUD 加一项"时悄悄失效（重叠，且不报错）。
@@ -719,7 +773,9 @@ body.zen .status{top:var(--zen-status-top,78px)}
   vector-effect:non-scaling-stroke;     /* ★ 缩放后线宽不跟着变细 */
 }
 .ecg-track{stroke:var(--mint);stroke-width:2;opacity:0}
-.status.ok .ecg-track{opacity:.55}
+/* 底轨的透明度改由 ecgTrackBreath 关键帧驱动 ⇒ 这里不再写死常量
+   （写死会把关键帧的起始值钉住，呼吸就没了）。 */
+.status.ok .ecg-track{opacity:.6}
 
 .ecg-sweep{
   stroke:#eafff9;stroke-width:3;opacity:0;
@@ -754,9 +810,12 @@ body.zen .status{top:var(--zen-status-top,78px)}
 
 /* 减少动效：不扫，但**波形与尖峰亮点仍然可见**（不靠动画做可见性） */
 @media (prefers-reduced-motion:reduce){
-  .status.ok .ecg-sweep{animation:none;stroke-dasharray:none;stroke-dashoffset:0;opacity:.8}
-  .status.ok .ecg-track{opacity:.6}
-  .status.ok .ecg-spark{animation:none;opacity:.9}
+  /* ★★★ 同理：ECG 的扫描**必须保留** —— 用户报「怎么只是保持常亮而不是动起来」，
+     根因就是这里把 animation 关掉了（实测：用户设备上报 reduce）。
+     扫描是低频、平滑的推移，不是闪频刺激；这里只是放慢一点。 */
+  .status.ok .ecg-sweep{animation-duration:3.4s}
+  .status.ok .ecg-track{opacity:.62}
+  .status.ok .ecg-spark{animation-duration:3.4s}
 }
 .status.ok{color:var(--mint)}.status.err{color:var(--rose)}
 
@@ -1111,6 +1170,9 @@ window.__accelSplashShownAt = (window.performance && performance.now())
            画成元素之后：常驻淡轨迹 + 一段亮线扫过，**稳定且明显**。 -->
       <svg class="ecg" viewBox="0 0 60 20" preserveAspectRatio="none" aria-hidden="true">
         <polyline class="ecg-track"
+          points="0,10 9,10 12,10 14,7 16,13 18,10 26,10 29,10 31,4 33,16 35,10 44,10 47,10 49,7 51,13 53,10 60,10"/>
+        <!-- ★ 主波形（声纹层）：整条起伏+亮度脉动 ⇒ "动起来"的主体 -->
+        <polyline class="ecg-wave"
           points="0,10 9,10 12,10 14,7 16,13 18,10 26,10 29,10 31,4 33,16 35,10 44,10 47,10 49,7 51,13 53,10 60,10"/>
         <polyline class="ecg-sweep" pathLength="100"
           points="0,10 9,10 12,10 14,7 16,13 18,10 26,10 29,10 31,4 33,16 35,10 44,10 47,10 49,7 51,13 53,10 60,10"/>
