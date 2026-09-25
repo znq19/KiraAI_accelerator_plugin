@@ -974,8 +974,11 @@ _bad_band = []
 for _m in re.finditer(r"\.wordmark\.neon-[\w-]*\s+[^{]*\{[^}]*color:transparent[^}]*\}", _neon):
     _rule = _m.group(0)
     _bg = re.search(r"background-image:\s*linear-gradient\(180deg[^;]*", _rule)
-    # 纵向窄带（180deg + 开头透明）⇒ 只露出一小段 ⇒ 字会长期不可见
-    if _bg and re.search(r"transparent\s+0%", _bg.group(0)):
+    # ★ 豁免条件：**有描边**（text-stroke）时字始终可见，扫光只是叠加亮带
+    #   —— 这类实现是安全的（neon-drop 就是这种），不该误报。
+    _has_stroke = re.search(r"text-stroke:\s*[\d.]+px", _rule) is not None
+    # 纵向窄带（180deg + 开头透明）**且无描边** ⇒ 只露一小段 ⇒ 字会长期不可见
+    if _bg and re.search(r"transparent\s+0%", _bg.group(0)) and not _has_stroke:
         _bad_band.append(_rule[:60])
 check("★★ 没有窄带裁剪式霓虹（那会让字大部分时间不可见）",
       not _bad_band, str(_bad_band))

@@ -94,16 +94,19 @@
         }
       },
       "providers": {
-        "type": "list",
+        "type": "multi_select",
         "name": "Provider allowlist (empty = all)",
         "default": [],
-        "hint": "Only apply to these provider names/IDs. Empty means all providers.",
+        "hint": "Pick the providers to accelerate (multi-select). Empty = all providers. Options come from the models you already configured, so no manual typing.",
         "locales": {
           "zh": {
-            "name": "生效提供商（留空=全部）",
-            "hint": "只对列出的提供商名称或 ID 生效，方便灰度测试。留空表示全部。默认：空。"
+            "name": "生效提供商（多选，留空=全部）",
+            "hint": "多选要加速的提供商。留空 = 全部。选项来自你已配置的模型，无需手填。"
           }
-        }
+        },
+        "source": "model",
+        "model_type": "llm",
+        "allow_custom": true
       }
     }
   },

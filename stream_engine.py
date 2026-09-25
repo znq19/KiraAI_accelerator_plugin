@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 
+import re
 import contextvars
 import logging
 import time
@@ -209,6 +210,36 @@ class StreamEngine:
         early = len(emitter.emitted) if emitter else 0
         if early:
             _mark_early_sent(resp, emitter.emitted, resp.text_response)
+
+        # ★★★ 工具调用轮次：**先出文本、后出 tool_calls** 的情形。
+        #
+        #   问题：文本已经被抢发出去（不可撤回），但紧接着出现了 tool_calls
+        #   ⇒ 本轮变成"工具轮"，框架**不会发送**这段文本
+        #   ⇒ ① 这段文本对框架来说"没发过"，却已经出现在聊天里；
+        #      ② 它仍留在 resp.text_response，进入下一轮上下文
+        #   ⇒ 模型下一轮照着上下文复述 ⇒ **用户看到复读**；
+        #      工具链也可能因为"文本没被当回事"而错乱。
+        #
+        #   修法：把**已抢发的段**如实记进 resp，并显式标注"本轮是工具轮"
+        #   ⇒ 发送层据此剥离，不会把已发内容再发一次，也不留孤儿文本。
+        # ★★ 诊断：工具轮里**已发出的文本含 <invoke> 之类标签**时，把它记下来。
+        #   为什么要记：xml_tag_fixer 在 ON_LLM_RESPONSE 里会把**未注册的标签**
+        #   当散落文本转义（`<invoke>` → `&lt;invoke&gt;`）。若这段文本恰好
+        #   已被抢先发出，用户就会看到一行被转义的乱码。
+        #   这条日志让"到底谁转义的"一眼可查（我们只 unescape，从不 escape）。
+        if saw_tool_call and emitter is not None and emitter.emitted:
+            _joined = "".join(emitter.emitted)
+            if re.search(r"<\s*(invoke|tool_calls|parameter)\b", _joined):
+                logger.warning(
+                    "[accel] 工具轮内抢发内容含工具标签（可能在 ON_LLM_RESPONSE 被"
+                    "下游插件转义）—— 已标记并交回框架；若用户看到 &lt;invoke&gt; "
+                    "形态的乱码，请检查 xml_tag_fixer 的标签注册表是否含 invoke")
+        if saw_tool_call and emitter is not None and emitter.emitted:
+            _mark_early_sent(resp, emitter.emitted, resp.text_response)
+            resp.__dict__["_accel_tool_turn_early"] = True
+            logger.warning(
+                "[accel] 工具轮内已抢先发送 %d 段（文本先于 tool_calls 到达）"
+                "—— 已标记，避免重复发送与上下文残留", len(emitter.emitted))
 
         stats = {
             "chunks": chunks,
