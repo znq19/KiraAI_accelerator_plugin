@@ -303,10 +303,22 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
 .wordmark.neon-breathe > span,
 .wordmark.neon-aurora > span,
 .wordmark.neon-prism > span,
+/* ★★★ 修复（实测：这一档原来只有**静态描边**，完全没动 ——
+   neonRing 关键帧定义了却从未被引用）。
+   现在把光带铺在文字内部并让它**持续扫过**，保留描边与双层光晕。 */
 .wordmark.neon-ring > span{
   -webkit-text-stroke:1.1px var(--nc);
   filter:drop-shadow(0 0 6px var(--nc)) drop-shadow(0 0 18px var(--nc));
+  background-image:linear-gradient(100deg,
+    var(--nc) 0%, var(--nc) 36%, #fff 50%, var(--nc) 64%, var(--nc) 100%);
+  background-size:280% 100%;background-repeat:no-repeat;
+  -webkit-background-clip:text;background-clip:text;color:transparent;
 }
+.wordmark.neon-ring > span{
+  animation:neonRing 4.6s linear infinite;
+}
+.wordmark.neon-ring > span:nth-child(2n){animation-delay:-1.2s}
+.wordmark.neon-ring > span:nth-child(3n){animation-delay:-2.4s}
 .wordmark.neon-breathe{animation:neonBreath 3.4s ease-in-out infinite}
 
 /* 循环流动一圈：一条高光沿文字横向扫过 */
@@ -424,6 +436,58 @@ h1{margin:0;font-size:15px;letter-spacing:.3px;font-weight:600}
 
 
 .wordmark.neon-orbit{filter:drop-shadow(0 0 8px var(--nc))}
+/* ★★★ 修复（实测：这一档原来只有**静态**阴影，完全没动 ——
+   用户报「有几个模式像完全没特效」）。
+   orbitSpin 关键帧早就定义了却从未被引用，现在真正用起来：
+   在文字内部铺一层**锥形渐变**并持续旋转，观感是"光在字里绕着转"。 */
+.wordmark.neon-orbit > span{
+  background-image:conic-gradient(from 0deg,
+    transparent 0deg, var(--nc) 40deg, transparent 90deg,
+    transparent 180deg, var(--viol) 220deg, transparent 270deg);
+  background-size:200% 200%;
+  -webkit-background-clip:text;background-clip:text;
+  color:transparent;-webkit-text-stroke:1.1px var(--nc);
+}
+.wordmark.neon-orbit{animation:orbitSpin 7s linear infinite}
+
+/* ═══ ★★★ `neon-drop`：**由上往下的随机扫光**（用户点名给 boost 加） ═══
+   与现有几档的区别：
+     · flow / aurora / ring 都是**横向**扫过；
+     · 这一档是**竖直**的 —— 一条光带从字顶落到字底，像被淋了一下。
+   随机性：横向位置(--drop-x)、时长(--drop-dur)、起始延迟全部每轮重掷，
+   而且由 JS 在每轮结束后重新起跑 ⇒ 不会看出固定节奏。
+   ⚠️ 用 background-position-Y 做位移（不用 clip-path）：与现有几档同源，
+      不会像 clip-path 那样在 Safari/WebView 上偶发不绘制。 */
+.wordmark.neon-drop .o,
+.wordmark.neon-drop .e{
+  background-image:linear-gradient(180deg,
+    transparent 0%, transparent 26%,
+    #fff 46%, var(--nc) 52%,
+    transparent 74%, transparent 100%);
+  background-size:100% 300%;
+  background-repeat:no-repeat;
+  background-position:var(--drop-x,50%) 150%;
+  -webkit-background-clip:text;background-clip:text;
+  color:transparent;
+  -webkit-text-stroke:1.2px var(--nc);
+  filter:drop-shadow(0 0 7px var(--nc));
+}
+.wordmark.neon-drop .e{                       /* boost 这几个字母更醒目 */
+  -webkit-text-stroke:1.5px var(--nc);
+  filter:drop-shadow(0 0 9px var(--nc)) drop-shadow(0 0 20px var(--pink,var(--nc)));
+}
+/* ★ 竖扫关键帧：从下方（150%）走到上方（-60%）⇒ 观感是**由上往下**落 */
+@keyframes neonDrop{
+  0%  {background-position:var(--drop-x,50%) 150%}
+  100%{background-position:var(--drop-x,50%) -60%}
+}
+/* 初始不跑（JS 每轮重掷参数后加 .neon-drop-run 才起跑）—— 这样每次
+   起跑用的都是**新的随机值**，而不是页面加载时定死的那一份。 */
+.wordmark.neon-drop.neon-drop-run .o,
+.wordmark.neon-drop.neon-drop-run .e{
+  animation:neonDrop var(--drop-dur,2.4s) cubic-bezier(.4,0,.6,1)
+            var(--drop-delay,0s) 1 both;
+}
 /* ★ 用户明确不要"往外扩的外圈"，所以这里**不再**画环绕文字的大圆环。
    改为**字内一颗弹珠流动**（见 .wordmark.neon-bead）—— 同样是"跑动"的感觉，
    但发生在文字内部，不会多出一个圈。 */
@@ -715,6 +779,75 @@ input[type=number]{font-variant-numeric:tabular-nums}
 input:focus,select:focus,textarea:focus{outline:none;border-color:var(--violet);box-shadow:0 0 0 3px rgba(139,124,255,.16)}
 textarea{min-height:64px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:11.5px}
 select{appearance:none;background-image:none;cursor:pointer}
+/* ═══ ★ 面板外链按钮：在新标签页打开独立前端 ═══ */
+.open-front{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:30px;height:30px;flex:none;margin-left:auto;margin-right:10px;
+  border-radius:9px;cursor:pointer;position:relative;
+  color:var(--dim2);background:rgba(255,255,255,.04);
+  border:1px solid var(--edge);
+  transition:color .22s, background .22s, transform .22s, border-color .22s;
+}
+.open-front .ico{font-size:15px;position:relative;z-index:1}
+/* 持续呼吸光晕（用户要的"持续特效"） */
+.open-front::after{
+  content:"";position:absolute;inset:-2px;border-radius:11px;pointer-events:none;
+  box-shadow:0 0 0 0 rgba(139,124,255,0);
+  animation:ofBreath 3.2s ease-in-out infinite;
+}
+@keyframes ofBreath{
+  0%,100%{box-shadow:0 0 0 0 rgba(139,124,255,0);   opacity:.55}
+  50%    {box-shadow:0 0 12px 2px rgba(139,124,255,.42); opacity:1}
+}
+.open-front:hover{
+  color:var(--ink);border-color:var(--violet);
+  background:linear-gradient(96deg,rgba(255,92,168,.20),rgba(139,124,255,.20));
+  transform:translateY(-1.5px);
+}
+.open-front:active{transform:translateY(0) scale(.94)}
+/* 点击时的环形扩散反馈 */
+.open-front::before{
+  content:"";position:absolute;inset:0;border-radius:9px;pointer-events:none;
+  border:1px solid var(--violet);opacity:0;
+}
+.open-front.of-ping::before{animation:ofPing .55s ease-out}
+@keyframes ofPing{
+  0%  {opacity:.9; transform:scale(1)}
+  100%{opacity:0;  transform:scale(1.9)}
+}
+
+.icon-btn{position:relative;display:inline-flex;align-items:center;justify-content:center;
+  width:30px;height:30px;padding:0;border-radius:9px;cursor:pointer;flex:none;
+  color:var(--ink);background:linear-gradient(96deg,rgba(255,92,168,.12),rgba(139,124,255,.12));
+  border:1px solid var(--edge);transition:transform .22s,border-color .22s,box-shadow .22s;
+  animation:btnBreath 3.6s ease-in-out infinite}
+.icon-btn .ico{width:15px;height:15px;stroke-width:2}
+.icon-btn:hover{transform:translateY(-1px) scale(1.06);border-color:var(--violet);
+  box-shadow:0 0 0 3px rgba(139,124,255,.16),0 4px 14px rgba(139,124,255,.28)}
+.icon-btn:active{transform:scale(.94)}
+/* 常驻柔光呼吸 + 一圈缓慢扩散的光环（"持续特效"） */
+@keyframes btnBreath{0%,100%{box-shadow:0 0 0 0 rgba(139,124,255,0)}
+  50%{box-shadow:0 0 12px 1px rgba(139,124,255,.30)}}
+@keyframes btnHalo{0%{opacity:.5;transform:scale(.86)}70%{opacity:0;transform:scale(1.5)}
+  100%{opacity:0;transform:scale(1.5)}}
+.icon-btn::after{content:"";position:absolute;inset:-2px;border-radius:11px;pointer-events:none;
+  border:1px solid var(--violet);animation:btnHalo 3.6s ease-out infinite}
+@media (prefers-reduced-motion:reduce){
+  /* ★ 用户明确要的按钮特效：reduce 下**保留**（放慢即可），不关掉 */
+  .icon-btn{animation-duration:6s}
+  .icon-btn::after{animation-duration:6s}
+}
+.wrap-multi{display:flex;flex-direction:column;gap:7px}
+.multi-chips{display:flex;flex-wrap:wrap;gap:6px;min-height:22px;align-items:center}
+.multi-empty{font-size:11.5px;color:var(--dim);font-style:italic}
+.chip-multi{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;
+  padding:3px 6px 3px 9px;border-radius:999px;color:var(--ink);
+  background:linear-gradient(96deg,rgba(255,92,168,.18),rgba(139,124,255,.18));
+  border:1px solid var(--edge);animation:chipIn .32s cubic-bezier(.2,.9,.3,1.3)}
+.chip-multi .chip-x{border:0;background:transparent;color:var(--dim);cursor:pointer;
+  font-size:13px;line-height:1;padding:0 2px;transition:color .18s,transform .18s}
+.chip-multi .chip-x:hover{color:var(--pink);transform:scale(1.22)}
+.multi-sel{font-size:11.5px}
 .f-ctl .wrap-sel{position:relative}
 .f-ctl .wrap-sel .ico{position:absolute;right:11px;top:50%;transform:translateY(-50%);
   pointer-events:none;color:var(--dim2);font-size:13px}
@@ -1215,6 +1348,16 @@ window.__accelSplashShownAt = (window.performance && performance.now())
         <p class="sub">Accelerator · Control Deck</p>
       </div>
     </div>
+    <!-- ★ 在新标签页打开独立前端：面板嵌在框架里时空间受限，
+         单独开一页壁纸与特效更完整。图标沿用内联 symbol 体系。 -->
+    <button class="open-front" id="btn-open-front" type="button"
+            title="在新标签页打开前端" aria-label="在新标签页打开前端">
+      <svg class="ico"><use href="#i-external"/></svg>
+    </button>
+    <button class="icon-btn" id="open-panel" type="button"
+            title="在新标签页打开完整面板" aria-label="在新标签页打开完整面板">
+      <svg class="ico"><use href="#i-external"/></svg>
+    </button>
     <div class="status" id="conn">
       <svg class="ico"><use href="#i-activity"/></svg><span id="conn-text">连接中</span>
       <!-- ★ 心电图：**真实的内联 SVG**，用 stroke-dashoffset 扫过。
@@ -1322,6 +1465,12 @@ window.__accelSplashShownAt = (window.performance && performance.now())
 </div>
 
 <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+  <!-- ★ Lucide 风格「外部链接」，与其余图标同源（1.8 描边、圆角端点） -->
+  <symbol id="i-external" viewBox="0 0 24 24">
+    <path d="M15 3h6v6" />
+    <path d="M10 14 21 3" />
+    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+  </symbol>
   <symbol id="i-rocket" viewBox="0 0 24 24">
     <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
     <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09" />
@@ -1456,6 +1605,19 @@ window.__accelSplashShownAt = (window.performance && performance.now())
 <script>
 /* ═══ 常量 ═══ */
 const PLUGIN_ID = "kira_accelerator";
+
+/* ★ 面板外链按钮：在新标签页打开**独立前端**。
+   目标 URL 就是当前面板页面本身（去掉可能的临时查询串），
+   这样无论框架把它挂在哪个前缀下都能用 —— 不写死路径。 */
+(function bindOpenFront(){
+  const btn = document.getElementById("btn-open-front");
+  if (!btn) return;
+  btn.addEventListener("click", ()=>{
+    btn.classList.remove("of-ping"); void btn.offsetWidth; btn.classList.add("of-ping");
+    const url = location.origin + location.pathname + location.search;
+    window.open(url, "_blank", "noopener,noreferrer");
+  });
+})();
 // ★ 两个前缀不一样，别合并：
 //   框架自带端点（config/icon/reload…）挂在 /api/plugins/<id>/…（复数 s）
 //   插件自己 @register.api 的端点挂在 /api/plugin/<id>/…（单数）
@@ -1654,15 +1816,51 @@ function makeControl(field, key, value, onChange){
     });
     box.appendChild(inp);
 
-  } else if (type === "list"){
-    const inp = el("input"); inp.type = "text";
-    inp.placeholder = "逗号分隔，留空=全部";
-    inp.value = Array.isArray(value) ? value.join(", ") : "";
-    inp.addEventListener("input", ()=>{
-      const parts = inp.value.split(",").map(x=>x.trim()).filter(Boolean);
-      on(parts.length ? parts : []);
+  } else if (type === "list" || type === "multi_select"){
+    /* ★ 多选下拉（用户要求：不用自己填、也难以自己填对）。
+       选项由后端 /providers 提供（框架 source:'model' 只作用于框架自己的配置页）。
+       保留一个"手填"入口 —— 万一 API 拿不到列表，用户仍能自己写。 */
+    const wrap = el("div", "wrap-multi");
+    const chips = el("div", "multi-chips");
+    const sel = el("select", "multi-sel");
+    const ph = el("option"); ph.value = ""; ph.textContent = "＋ 添加提供商 / 模型…";
+    sel.appendChild(ph);
+    const cur = Array.isArray(value) ? value.slice() : [];
+    const known = new Set(cur);
+    const opts = (window.__ACCEL_PROVIDERS__ || []);
+    opts.forEach(o=>{
+      if (known.has(o.value)) return;
+      const op = el("option"); op.value = o.value; op.textContent = o.label;
+      sel.appendChild(op);
     });
-    box.appendChild(inp);
+    function paint(){
+      chips.textContent = "";
+      if (!cur.length){
+        const d = el("span", "multi-empty"); d.textContent = "留空 = 全部提供商";
+        chips.appendChild(d); return;
+      }
+      cur.forEach(v=>{
+        const c = el("span", "chip-multi");
+        const lbl = (opts.find(o=>o.value===v) || {}).label || v;
+        c.appendChild(document.createTextNode(lbl));
+        const x = el("button", "chip-x"); x.type = "button"; x.textContent = "×";
+        x.title = "移除";
+        x.addEventListener("click", (e)=>{
+          e.preventDefault();
+          const i = cur.indexOf(v); if (i >= 0) cur.splice(i,1);
+          paint(); on(cur.slice());
+        });
+        c.appendChild(x); chips.appendChild(c);
+      });
+    }
+    sel.addEventListener("change", ()=>{
+      if (!sel.value) return;
+      if (!cur.includes(sel.value)) cur.push(sel.value);
+      sel.value = ""; paint(); on(cur.slice());
+    });
+    paint();
+    wrap.appendChild(chips); wrap.appendChild(sel);
+    box.appendChild(wrap);
 
   } else if (type === "json"){
     const ta = el("textarea");
@@ -2951,7 +3149,7 @@ const NEON_COLORS = ["#ff6fae", "#8b7cff", "#5ef0c0", "#00e5ff", "#ff4fd8",
      scan    —— 扫描线（一条细亮线纵向扫过字面）
      ring    —— 光环脉冲（字外一圈光环向外扩散后消失）
    全部纯 CSS，JS 只负责"选哪个 / 什么时候换"。 */
-const NEON_MODES = ["neon-breathe", "neon-flow", "neon-orbit", "neon-aurora", "neon-prism", "neon-scan", "neon-ring", "neon-bead"];
+const NEON_MODES = ["neon-breathe", "neon-flow", "neon-orbit", "neon-aurora", "neon-prism", "neon-scan", "neon-ring", "neon-bead", "neon-drop"];
 
 /* 抽成独立函数：既可以"进入页面时选一次"，也可以"定时再选一次"。
    ★ 换模式时要**先移除旧的**再添加新的 —— 否则两个类同时存在，
@@ -3003,6 +3201,31 @@ function rollNeon(){
   wm.style.setProperty("--nc", color);
   wm.classList.add(pick);
   window.__accelNeon = { mode: pick, color };
+  /* ★ `neon-drop` 是"一次性竖扫"，不是无限循环 ⇒ 需要自己重掷随机量再起跑。
+     随机四项：横向位置 / 时长 / 起始延迟 / 轮间停顿。
+     重掷在**本轮结束之后**（而不是固定节拍），所以看不到规律。 */
+  if (pick === "neon-drop") startDropCycle(wm);
+}
+
+/** 让 `neon-drop` 每轮重新掷随机参数并重新起跑（由上往下的随机扫光）。 */
+function startDropCycle(wm){
+  if (window.__accelDropTimer){ clearTimeout(window.__accelDropTimer); window.__accelDropTimer = null; }
+  const fire = ()=>{
+    // 每次都重掷 ⇒ 位置、快慢、节奏都不同
+    const dur  = (1.6 + Math.random() * 1.6).toFixed(2);          // 1.6~3.2s
+    const pos  = (15 + Math.random() * 70).toFixed(1);            // 15%~85%
+    const hold = 800 + Math.random() * 2700;                      // 停顿 0.8~3.5s
+    const delay = Math.random() * 900;                            // 起始抖动
+    wm.style.setProperty("--drop-dur", dur + "s");
+    wm.style.setProperty("--drop-x", pos + "%");
+    // 重新触发动画（必须先把 animation 清掉再加回来，否则浏览器认为"没变"）
+    wm.classList.remove("neon-drop-run");
+    void wm.offsetWidth;                                          // 强制 reflow
+    wm.classList.add("neon-drop-run");
+    wm.style.setProperty("--drop-delay", (delay / 1000).toFixed(2) + "s");
+    window.__accelDropTimer = setTimeout(fire, delay + Number(dur) * 1000 + hold);
+  };
+  fire();
 }
 
 let neonTimer = null;
@@ -3402,7 +3625,40 @@ function initZen(){
 /* ═══ 启动 ═══ */
 $("#save").addEventListener("click", saveConfig);
 $("#revert").addEventListener("click", revert);
+/* ★ 提供商/模型列表：启动时拉一次，供多选下拉使用。
+   失败就静默（表单退化为可手填），绝不因为拿不到列表就让配置页不可用。 */
+async function loadProviderOptions(){
+  try{
+    const r = await fetch(PAPI + "/providers", {credentials:"include"});
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const d = await r.json();
+    window.__ACCEL_PROVIDERS__ = (d && d.providers) || [];
+    if (typeof window.__refreshMultiSelects === "function") window.__refreshMultiSelects();
+  }catch(e){
+    window.__ACCEL_PROVIDERS__ = window.__ACCEL_PROVIDERS__ || [];
+  }
+}
+
+/* ★ 外链按钮：在新标签页打开【完整面板】。
+   不写死路径 —— 用当前 location 推导出插件页前缀，
+   这样换端口 / 换挂载路径 / 反向代理下都能正确打开。 */
+function openPanelInNewTab(){
+  const btn = document.getElementById("open-panel");
+  if (btn){ btn.style.transform = "scale(.9)"; setTimeout(()=>{ btn.style.transform = ""; }, 160); }
+  // 当前页形如 /plugin-page/<id>/index；取到 /plugin-page/<id>/ 再拼 index
+  const p = location.pathname;
+  const m = p.match(/^(.*\/plugin-page\/[^\/]+\/)/);
+  const url = m ? (m[1] + "index") : (p.replace(/[^\/]*$/, "") + "index");
+  window.open(url, "_blank", "noopener");
+}
+window.openPanelInNewTab = openPanelInNewTab;
+document.addEventListener("click", (e)=>{
+  const b = e.target && e.target.closest && e.target.closest("#open-panel");
+  if (b){ e.preventDefault(); openPanelInNewTab(); }
+});
+
 poll(); setInterval(poll, 3000);
+loadProviderOptions(); setInterval(loadProviderOptions, 60000);
 initNeon();
 initTagline();
 initZen();

@@ -540,10 +540,17 @@ class AcceleratorPlugin(BasePlugin):
                     return client
 
                 # provider 白名单（空=全部）
+                # ★★ 多选下拉给的值是 `providerId:modelId`（框架 source:'model' 的格式），
+                #   所以三种写法都要认，否则用户从下拉里选了也匹配不上：
+                #     · "providerId:modelId"（模型级，下拉默认给这个）
+                #     · "providerId"（提供商级，兼容旧配置 / 手填）
+                #     · "providerName"（名称，最老的写法，继续兼容）
                 if allowed:
-                    pname = getattr(getattr(client, "model", None), "provider_name", "") or ""
-                    pid = getattr(getattr(client, "model", None), "provider_id", "") or ""
-                    if pname not in allowed and pid not in allowed:
+                    m0 = getattr(client, "model", None)
+                    pname = getattr(m0, "provider_name", "") or ""
+                    pid = getattr(m0, "provider_id", "") or ""
+                    mid = getattr(m0, "model_id", "") or ""
+                    if not ({pname, pid, f"{pid}:{mid}"} & allowed):
                         return client
 
                 # 用 (provider_id, model_id) 而非 id(client) 做键：
@@ -1391,6 +1398,49 @@ class AcceleratorPlugin(BasePlugin):
     # ══════════════════════════════════════════════════════════
     # API / 工具
     # ══════════════════════════════════════════════════════════
+    @register.api(method="GET", path="/providers", auth=True)
+    async def api_providers(self):
+        """列出**已配置的提供商与模型**，供面板的多选下拉使用。
+
+        ★ 为什么要这个 API：框架的 source:'model' 只对**框架自己的配置页**生效；
+          插件自带的侧边栏面板是独立前端，拿不到那份列表，只能自己问后端。
+          返回扁平列表，每项同时给出"模型级 / 提供商级 / 名称"三种取值 ——
+          用户点哪个都能匹配（后端三种都认）。
+        """
+        out = []
+        try:
+            from core.provider.provider_manager import ProviderManager
+            mgr = ProviderManager()
+            # 兼容不同框架版本：先试 async，再试 sync
+            provs = None
+            for attr in ("get_all_providers", "list_providers", "providers"):
+                v = getattr(mgr, attr, None)
+                if v is None:
+                    continue
+                try:
+                    provs = await v() if callable(v) else v
+                except TypeError:
+                    provs = v
+                break
+            for p in (provs or []):
+                pid = getattr(p, "id", None) or getattr(p, "provider_id", "") or ""
+                pname = getattr(p, "name", None) or getattr(p, "provider_name", "") or pid
+                models = getattr(p, "models", None) or {}
+                llm = (models.get("llm") if isinstance(models, dict) else None) or {}
+                if isinstance(llm, dict) and llm:
+                    for mid in llm.keys():
+                        out.append({"value": f"{pid}:{mid}",
+                                    "label": f"{mid} ({pname})",
+                                    "provider_id": pid, "provider_name": pname,
+                                    "model_id": mid})
+                else:
+                    out.append({"value": pid, "label": pname,
+                                "provider_id": pid, "provider_name": pname,
+                                "model_id": ""})
+        except Exception:  # noqa: BLE001
+            logger.exception("[accel] 列出提供商失败（面板退化为可手填）")
+        return {"providers": out}
+
     @register.api(method="GET", path="/health", auth=True)
     async def api_health(self):
         sid = self._current_sid
