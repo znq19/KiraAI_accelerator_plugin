@@ -202,7 +202,9 @@ def opaque_fraction(bias):
 
 
 f_start = opaque_fraction(B0)
-f_mid = opaque_fraction(B0 + (B1 - B0) * 0.5)     # 进度 50% 处
+# ★ 曲线已改为 p^2.5（幂曲线）—— 原来按线性/50% 算，会得出"中段 100%"的
+#   过时结论。这里按**实际曲线**取 50% 处的 bias。
+f_mid = opaque_fraction(B0 + (B1 - B0) * (0.5 ** 2.5))   # 进度 50% 处
 f_end = opaque_fraction(B1)
 print(f"     bias={B0:+.2f} ⇒ 不透明占比 ≈ {f_start*100:.2f}%   （开场：一粒墨）")
 print(f"     bias={B0+(B1-B0)*0.5:+.2f} ⇒ 不透明占比 ≈ {f_mid*100:.1f}%    （中段：斑块散开）")
@@ -584,8 +586,10 @@ print("═══ 19) ★★ 墨渗的 SVG 必须**全屏**（0×0 时 image 尺�
 #    要定位承载墨渗的那个：它带 id="wpInkImg"。
 _svg = re.search(r"<svg[^>]*>\s*(?:<!--[\s\S]*?-->\s*)*<mask id=\"wpInkMask\"", HTML)
 _svg = re.search(r"<svg[^>]*>(?=[\s\S]{0,2400}?id=\"wpInkMask\")", HTML)
-check("★ SVG 载体是全屏的（不是 width=0 height=0）",
-      _svg is not None and "width:100%" in _svg.group(0) and "height:100%" in _svg.group(0),
+# ★ 尺寸改用**视口单位**：`width:100%` 在 .wallpaper 容器内实测解析为 0×0，
+#   而 <image width="100%"> 是相对该 SVG 解析的 ⇒ 什么都画不出。
+check("★ SVG 载体是全屏的（视口单位，不是 0×0）",
+      _svg is not None and "width:100vw" in _svg.group(0) and "height:100vh" in _svg.group(0),
       _svg.group(0)[:90] if _svg else "找不到")
 check("★ 且不接收指针事件（不挡操作）",
       _svg is not None and "pointer-events:none" in _svg.group(0))
@@ -1100,7 +1104,8 @@ check("★★ 墨渗的 SVG 载体在 .wp-scrim **之前**（= 之下，受同�
       0 < _svg < _scrim, f"svg@{_svg} scrim@{_scrim}")
 # ② SVG 载体必须全屏（0×0 时 <image width=100%> 就是 0 ⇒ 什么都画不出）
 _svgtag = HTML[_svg:HTML.index('>', _svg) + 1]
-check("★ SVG 载体是全屏的", "width:100%" in _svgtag and "height:100%" in _svgtag)
+check("★ SVG 载体是全屏的（视口单位）",
+      "width:100vw" in _svgtag and "height:100vh" in _svgtag)
 check("★ 且不接收指针事件", "pointer-events:none" in _svgtag)
 # ③ fxInk 必须**始终**淡入新图（SVG 万一没渲染也不会硬切）
 _ink = js[js.index("function fxInk"):js.index("\nfunction ", js.index("function fxInk") + 12)]
@@ -1208,8 +1213,10 @@ _ink2 = js[js.index("function fxInk"):js.index("\nfunction ", js.index("function
 # ① 不能再用 1.658 放大（那会让墨在中段就散完 ⇒ 观感"一下出现"）
 check("★★ 偏置不再用 1.658 放大（否则 50% 进度就 79% 不透明 ⇒ 像硬切）",
       "1.658" not in _ink2)
-check("★ 偏置按 smoothstep 线性铺满整个时长",
-      "setBias(BIAS0 + (BIAS1 - BIAS0) * ease(p));" in _ink2)
+# ★ 已从 smoothstep 改为 **p^2.5**：该阈值函数在阈附近极陡，
+#   smoothstep 会让"渗开"在中段就冲到 100% ⇒ 看不出扩散过程（用户："看不出啥效果"）。
+check("★★ 偏置用幂曲线铺满整个时长（p^2.5，保证中段仍在扩散）",
+      "Math.pow(p, 2.5)" in _ink2)
 # ② 噪声必须先拉对比再阈值（否则过阈的是"一片均匀的块"，边界感弱）
 check("★★ 噪声先拉对比（feFuncR/G/B slope）再阈值化",
       re.search(r'<feComponentTransfer in="n" result="nc">[\s\S]{0,300}slope="2\.6"', HTML) is not None)

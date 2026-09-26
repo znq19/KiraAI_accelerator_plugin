@@ -167,6 +167,56 @@ check("★★ 调度处对特效调用有 try/catch", "catch (e)" in _blk and "f
 check("★★ 失败时退化为淡入（最坏无特效，绝不硬切）",
       "退化为普通淡入" in _blk or "兜底淡入" in _blk)
 
+
+
+print()
+print("═══ ★★★ 收尾不得让旧图/新图闪现（本轮两个真 bug）═══")
+# 现场1：fxBurn 收尾写 `from.style.opacity="0"` 后又 `anim(from,[{opacity:1},...])`
+#        ⇒ 动画首帧把 0 拉回 1 ⇒ 旧图重新可见一帧（"燃完出现旧图帧"）
+# 现场2：wpSettle 先 wpNormalize(fromId) 后 remove("on")
+#        ⇒ 清空 inline opacity 到摘 .on 之间，`.wp-stage.on` 仍让它可见 ⇒ 同症状
+# 必须先剥注释：注释里写了 `anim(from,[{opacity:1},...])` 作为反例，
+# 不剥掉就会把注释里的反例当成真实代码，判据假红。
+_b = re.sub(r"/\*[\s\S]*?\*/", "", JS[JS.find("function fxBurn"):JS.find("function fxInk")])
+_b = re.sub(r"//[^\n]*", "", _b)
+# 用「收尾」特征定位（第一个 applyMask 是函数定义，不是收尾处）
+# 判据：收尾阶段**不得**出现「先设 opacity=0，紧接着又用 opacity:1 起动画」
+# 这个组合——那正是"燃完旧图闪现一帧"的成因。用负向断言最稳，不依赖定位。
+_no_bounce = re.search(
+    r'from\.style\.opacity\s*=\s*"0"[\s\S]{0,120}?anim\(from,\s*\[\{\s*opacity:\s*1',
+    _b) is None
+check("★★★ 燃纸收尾不得「设 0 后又从 1 起动画」（会闪一帧旧图）", _no_bounce)
+check("★ 收尾的 from 动画从 0 开始（保持不变）",
+      '{opacity:0},{opacity:0}' in _b)
+
+
+
+print()
+print("═══ ★★★ 墨染：遮罩必须**真正铺满**（否则收尾靠新图兜底 = 硬切）═══")
+# 覆盖率模型：alpha = clamp(2.6*L - 0.8 + bias)，噪声亮度 L ≈ (U+U)/2
+_ink = JS[JS.find("function fxInk"):]
+_ink = re.sub(r"/\*[\s\S]*?\*/", "", _ink)
+_m = re.search(r"BIAS0\s*=\s*(-?[\d.]+)[\s\S]{0,200}?BIAS1\s*=\s*(-?[\d.]+)", _ink)
+if _m:
+    _b0, _b1 = float(_m.group(1)), float(_m.group(2))
+    import random as _r
+    _r.seed(7)
+    _L = [(_r.random() + _r.random()) / 2 for _ in range(8000)]
+    def _cover(bias):
+        return sum(1 for Lv in _L
+                   if min(1.0, max(0.0, min(1.0, 2.6 * Lv - 0.8) + bias)) > 0.5) / len(_L)
+    check(f"★★★ BIAS1={_b1} 必须真正铺满（100%）",
+          _cover(_b1) >= 0.995, f"实际 {_cover(_b1)*100:.1f}%")
+    check(f"★ BIAS0={_b0} 几乎不覆盖（正确的「一粒墨」起点）",
+          _cover(_b0) <= 0.02, f"实际 {_cover(_b0)*100:.1f}%")
+else:
+    check("★★★ 能找到 BIAS0/BIAS1", False, "未匹配")
+
+check("★★ 墨染 SVG 用视口单位（100% 在容器内解析为 0×0）",
+      "width:100vw" in HTML and "height:100vh" in HTML)
+check("★★ 墨染 maskUnits=userSpaceOnUse（与内部 100% 单位匹配）",
+      'id="wpInkMask" maskUnits="userSpaceOnUse"' in HTML)
+
 print()
 if _fail:
     print(f"❌ {len(_fail)} 项未通过: {_fail[:6]}")
