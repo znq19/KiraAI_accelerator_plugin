@@ -367,6 +367,7 @@ class AcceleratorPlugin(BasePlugin):
         try:
             if sid:
                 self._sent_ledger.pop(sid, None)
+                self._sent_ledger.pop(sid + "\x00ev", None)
                 self._ledger_consumed.pop(sid, None)
                 self._resp_by_sid.pop(sid, None)
         except Exception:  # noqa: BLE001
@@ -456,6 +457,7 @@ class AcceleratorPlugin(BasePlugin):
                     continue
                 self._ledger_ts.pop(k, None)
                 self._sent_ledger.pop(k, None)
+                self._sent_ledger.pop(k + "\x00ev", None)
                 self._ledger_consumed.pop(k, None)
                 self._resp_by_sid.pop(k, None)
         except Exception:  # noqa: BLE001
@@ -743,6 +745,7 @@ class AcceleratorPlugin(BasePlugin):
         if sid:
             try:
                 self._sent_ledger.pop(sid, None)
+                self._sent_ledger.pop(sid + "\x00ev", None)
                 # ★★ 必须**一起清掉响应与结果**，否则会用到**上一轮的响应**：
                 #   `_resp_by_sid[sid]` 存的是上一轮的响应，若这一轮先走到发送层，
                 #   拿到的 n / segs 全是旧的 ⇒
@@ -869,6 +872,14 @@ class AcceleratorPlugin(BasePlugin):
         #   ⇒ **整份回复被重新发一遍**（比漏切一段严重得多）。
         if delivered and ctx is not None and ctx.sid:
             try:
+                # ★★★ 台账**带轮次 id**：上一轮的残留绝不能参与本轮的剥离
+                #   （否则"本轮文本恰好与上一轮相同"时会被误剪 = 丢内容）。
+                #   轮次变了就**重新开账** —— 这也是**不依赖任何钩子执行**的清理方式，
+                #   比"等 final_result 来清"稳得多（那个钩子可能被跳过）。
+                cur_ev = getattr(getattr(ctx, "event", None), "event_id", None)
+                if self._sent_ledger.get(ctx.sid + "\x00ev") != cur_ev:
+                    self._sent_ledger[ctx.sid] = []
+                    self._sent_ledger[ctx.sid + "\x00ev"] = cur_ev
                 self._sent_ledger.setdefault(ctx.sid, []).append(seg)
                 # 记"最后一次活动时间"，供 `_clear_stale_round_state` 判断陈旧
                 if not isinstance(getattr(self, "_ledger_ts", None), dict):
@@ -1283,8 +1294,23 @@ class AcceleratorPlugin(BasePlugin):
                 #     超时自动失效，不依赖任何钩子一定被执行。
                 #      （正常一轮远短于 5 分钟；真的跑那么久，
                 #        宁可不剥离（最坏重复一次）也不能永久失效。）
-                _cons_ts = plugin._ledger_consumed.get(sid_now) if sid_now else None
-                if _cons_ts and (time.time() - _cons_ts) < 300:
+                # ★★★ 用**轮次标识**（event_id）判断"是否已消费"，而不是时间戳。
+                #
+                #   踩过的坑（用户："还是经常触发重复发送"）：
+                #   上一版用 `(time.time() - ts) < 300` 做时效 —— 也就是
+                #   **5 分钟内都算"已消费"**。但连续对话里每轮间隔通常远小于 5 分钟
+                #   ⇒ 标记一直有效 ⇒ **从第二轮起每轮都走"已消费 ⇒ 不剥离"**
+                #   ⇒ 每一轮都重复发送。时间戳根本区分不了"同一轮的第二步"
+                #   和"下一轮的第一步"。
+                #
+                #   ⇒ 正确做法：**按轮次 id 判断**。框架的 `event.event_id`
+                #     就是"唯一标识一个事件"的字段（见 message_utils.py 注释）。
+                #     同一轮的不同步：event_id 相同 ⇒ 已消费 ⇒ 不剥离；
+                #     下一轮：event_id 变了 ⇒ 视为**新轮** ⇒ 正常剥离。
+                #     ⇒ 既不依赖钩子一定执行，也不会跨轮误判。
+                _ev = getattr(event, "event_id", None) or sid_now
+                _cons_ev = plugin._ledger_consumed.get(sid_now) if sid_now else None
+                if _cons_ev is not None and _cons_ev == _ev:
                     ledger = []
                     segs = []
                     n = 0
@@ -1299,8 +1325,10 @@ class AcceleratorPlugin(BasePlugin):
                     n = len(ledger)
                     segs = list(ledger)
                     if sid_now:
-                        # 记**时间戳**（不是 True）——超时自动失效，见上
-                        plugin._ledger_consumed[sid_now] = time.time()
+                        # 记**轮次 id**（不是 True、也不是时间戳）——
+                        # 下一轮 event_id 变了就会被视为"新轮"，见上
+                        plugin._ledger_consumed[sid_now] = (
+                            getattr(event, "event_id", None) or sid_now)
                 elif n > 0 and not segs:
                     # 台账没有、标记在但段原文不在（理论上不该发生）
                     # ⇒ 只能按序号剥离，留一条线索
@@ -1394,6 +1422,7 @@ class AcceleratorPlugin(BasePlugin):
                         #   清掉之后：第二次调用 n=0、不告警、原样交给框架（正确）；
                         #   而"真抢发过但标记丢了"的场景台账仍在，兜底依旧生效。
                         plugin._sent_ledger.pop(sid_now, None)
+                plugin._sent_ledger.pop(sid_now + "\x00ev", None)
             # ★★ 声明「有不可撤销的副作用」：这个函数的调用会**真的把消息发出去**。
             #   一旦它抛异常，`patches.guard` 默认会"回落原实现"——那等于**再发一遍**
             #   （用户线上看到的就是同一段回复重复出现）。

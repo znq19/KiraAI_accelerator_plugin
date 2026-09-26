@@ -1,7 +1,7 @@
 {
   "plugin_id": "kira_accelerator",
   "display_name": "KiraAI Accelerator",
-  "version": "1.0.10",
+  "version": "1.0.12",
   "author": "znq19",
   "repo": "https://github.com/znq19/KiraAI_accelerator_plugin",
   "description": "Speed up KiraAI's processing and replies: it streams as it writes, so the first sentence appears in about a second instead of after the whole answer. Plus auto on-demand thinking — every optimisation is toggleable, self-recovering, and applies live from the WebUI panel.",
