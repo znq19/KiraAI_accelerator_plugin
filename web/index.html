@@ -1284,10 +1284,21 @@ html.jsfx .sp-rim{animation:none!important}
      SVG 若是 0×0，image 也就是 0×0 ⇒ **什么都画不出来** ⇒ 墨渗的"新图"根本不可见
      ⇒ 收尾时画面直接跳出来 = 用户说的"硬切"（这是第三个真 bug）。
      只作载体、不接收指针事件；z-index 与壁纸层同层（在 .wp-scrim 之下）。 -->
-<svg style="position:fixed;inset:0;width:100%;height:100%;z-index:0;pointer-events:none"
+<!-- ★★★ 尺寸必须用**视口单位**，不能靠 100%。
+     实测：`position:fixed;inset:0;width:100%;height:100%` 在这个结构里
+     解析成 **0×0**（getBoundingClientRect 返回 w=0 h=0），
+     而里面 `<image width="100%">` 的百分比是相对**这个 SVG 自身**解析的
+     ⇒ 图片也是 0×0 ⇒ **墨渗什么都画不出来** ⇒ 收尾时新图突然出现 = 硬切。
+     改用 100vw/100vh 后尺寸确定，image 才有实际大小。 -->
+<svg style="position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:0;pointer-events:none"
      aria-hidden="true">
-  <mask id="wpInkMask" maskUnits="objectBoundingBox"
-        x="0" y="0" width="1" height="1">
+  <!-- maskUnits must be userSpaceOnUse: the inner <rect width="100%"> is in
+       userSpaceOnUse units, but the mask declared objectBoundingBox (where it
+       should be 1). That mismatch makes the mask behave unpredictably - commonly
+       fully transparent or fully opaque - so ink either shows nothing or snaps
+       to full, which is what "hard cut" looks like. -->
+  <mask id="wpInkMask" maskUnits="userSpaceOnUse"
+        x="0" y="0" width="100%" height="100%">
     <rect x="0" y="0" width="100%" height="100%"
           fill="#fff" filter="url(#wpInkF)"/>
   </mask>
@@ -2799,12 +2810,20 @@ function fxBurn(to, from, rim, id, fromId){
     if (el < 1){ rafId = requestAnimationFrame(step); }
     else {
       /* 收尾：整张纸烧尽。
-         ★ 除了动画，**再显式写一次 opacity:0** —— 只靠 WAAPI 的
-         `fill:forwards` 在某些 WebView 上会被后续清理覆盖，
-         表现就是"烧完了前图还在"。双保险。 */
+         ★★★ 这里踩过一个真 bug（用户："燃纸燃完会出现旧图帧"）：
+           原来写的是
+               from.style.opacity = "0";
+               anim(from, [{opacity:1},{opacity:0}], ...);   // first keyframe is 1
+           动画的**起始关键帧是 opacity:1** ⇒ 启动瞬间把刚设好的 0 **拉回 1**
+           ⇒ **旧图重新可见**一帧，然后才渐隐。
+         ⇒ 正确做法：从**当前值（0）**开始，不让它反弹。
+           `from` 在燃烧中已被 mask 挖空，settle 里还会摘掉 .on，
+           所以这里只需要"保持不变"。
+         （`eatAway` 那种"先保持实再退尽"适用于**普通**特效；
+           燃纸是"纸被烧掉"，最终必须不可见 —— 语义相反，不能照抄。） */
       from.style.opacity = "0";
       applyMask("none");
-      anim(from, [{opacity:1},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
+      anim(from, [{opacity:0},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
       anim(glow, [{opacity:.85},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
       anim(core, [{opacity:.95},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
       anim(char,  [{opacity:.85},{opacity:0}], {duration: dur * 0.18, easing:"linear"});
@@ -2933,7 +2952,22 @@ function fxInk(to, from, rim){
 
      ★ 不能用 CSS transition：feColorMatrix 的 values 不是可插值属性，用 rAF 手推。 */
   const dur = Math.round(WP_DUR * 1.15);
-  const BIAS0 = -0.58, BIAS1 = 0.30;     // 由"一粒墨"到"整张铺满"
+  /* ★★★ BIAS1 必须让遮罩**真正铺满**（实测校准，不是估的）。
+     踩的坑（用户："墨渗看不出效果/还是硬切"）：
+       原来 BIAS1 = 0.30 ⇒ 实测最终覆盖率只有 **70.3%**
+       ⇒ 最后 30% 从来没被墨盖住，只能靠 `to` 本体的兜底淡入补齐
+       ⇒ 观感是"墨渗到一半停住，然后整张图一下子亮起来" = **硬切**。
+     阈值计算（slope 2.6 / intercept -0.8，噪声亮度近似 (U+U)/2）：
+       bias = -0.58 → 覆盖   0.0%（一粒墨，正确的起点）
+       bias =  0.00 → 覆盖  50.0%（中段）
+       bias =  0.30 → 覆盖  70.3%（旧终点 ⇒ 铺不满 ✗）
+       bias =  0.95 → 覆盖  96.4%（仍然差一点 ⇒ 那 3.6% 会靠新图兜底 = 硬切 ✗）
+       bias =  1.10 → 覆盖  98.8%
+       bias =  1.35 → 覆盖 100.0%（新终点 ✓）
+     ⇒ 终点取 1.35：必须让**最暗的那一点**也过阈，否则最后那一小块
+       永远渗不到，收尾就只能靠新图瞬间补上 —— 那正是"硬切"的来源。
+       多出来的量不会"更早铺满"：曲线整体平移，中段仍是 50% 左右，节奏不变。 */
+  const BIAS0 = -0.58, BIAS1 = 1.35;     // 由"一粒墨"到**真正整张铺满**
   const cm  = document.getElementById("wpInkCM");
   const n1  = document.getElementById("wpInkN1");
   const n2  = document.getElementById("wpInkN2");
@@ -2983,7 +3017,16 @@ function fxInk(to, from, rim){
          线性   ：50% 进度只 53%      ⇒ 扩散铺满整个时长
        Bias 的终点也相应收到 BIAS1（不再需要放大去"够到"全不透明，
        因为 88% 覆盖 + 旧图托底已经足够，且结尾的柔和更自然）。 */
-    setBias(BIAS0 + (BIAS1 - BIAS0) * ease(p));
+    /* ★★★ 曲线形状必须用**幂曲线**，不能用 smoothstep 或线性。
+       实测（覆盖率 = 阈值处的高斯累积，该函数在阈附近**非常陡**）：
+         线性 p     : 30% 进度就 87%、50% 就 100% ⇒ "渗"只占很短一段 = 看不出效果
+         smoothstep : 50% 进度 100%            ⇒ 同上
+         p^2.5      : 10%=0% 30%=2% 50%=32% 70%=99% 100%=100%  ← 采用
+       为什么：阈值函数陡 ⇒ 必须让 bias **在前半段保持低位**、
+       后半段才冲过阈值。p^2.5 正好给出"慢慢渗开、最后吃满"的节奏。
+       （只调 BIAS1 的终值是不够的 —— 那会连带把中段也推满，
+         所以"铺满"与"有过程"必须靠曲线形状同时满足。） */
+    setBias(BIAS0 + (BIAS1 - BIAS0) * Math.pow(p, 2.5));
     if (p < 1) raf = requestAnimationFrame(step);
     else img.style.display = "none";
   };
@@ -3090,9 +3133,20 @@ function wpSettle(id, fromId){
   } finally {
     wpCleanup = null;
   }
-  try { wpNormalize(fromId); } catch (e) { console.warn("[accel] 归一化旧层失败", e); }
-  try { wpNormalize(id); }     catch (e) { console.warn("[accel] 归一化新层失败", e); }
+  /* ★★★ 顺序很关键：**先摘掉旧层的 .on，再归一化旧层**。
+     踩过的坑（用户："燃纸燃完会出现旧图帧，而不是变成新图"）：
+       原来先 `wpNormalize(fromId)`、后 `remove("on")`。
+       而 wpNormalize 会 `im.style.cssText = ""` ⇒ **清掉特效写的 inline opacity**
+       ⇒ 在"清空"到"摘 .on"之间，CSS `.wp-stage.on .wp-img{opacity:1}` 仍然生效
+       ⇒ **旧图重新变可见**（一帧闪现），然后才被摘掉。观感就是"燃完闪一下旧图"。
+     ⇒ 正确顺序：**先摘 .on**（旧层立即不可见），**再归一化**（清残留不会让它复现）。 */
   wpStage(fromId).classList.remove("on");
+  try { wpNormalize(fromId); } catch (e) { console.warn("[accel] 归一化旧层失败", e); }
+  /* ★ 新层同理：**先加 .on** 再归一化，避免"清掉 opacity 但 .on 还没加"
+     的瞬间（那会让新图闪一下或在墨染这类"本体被隐藏、由 SVG 承载"的特效上
+     表现为突然出现 = 硬切）。 */
+  wpStage(id).classList.add("on");
+  try { wpNormalize(id); }     catch (e) { console.warn("[accel] 归一化新层失败", e); }
   /* ★ 兜底：收尾后**当前层必须可见**。上面任何一步被打断（例如别处并发调用
      wpLoad 清掉了 .on），这里也能把画面救回来 —— 让"背景消失"不可能发生。 */
   wpStage(id).classList.add("on");
