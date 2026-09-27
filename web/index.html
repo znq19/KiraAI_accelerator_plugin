@@ -2748,6 +2748,39 @@ function fxIris(to, from, rim){
    ⇒ 观感就是"燃纸完全没效果 / 硬切"。
    ★★ 教训：函数体里出现的自由变量，必须确认它在**参数或闭包**里真实存在；
       这类错误静态检查抓不到（JS 不报未定义变量在运行前），所以**必须实测**。 */
+let _wpBurnSvg = null, _wpBurnImgSrc = "";
+function _wpBurnCarrier(show, LW, LH) {
+  try {
+    if (!_wpBurnSvg) {
+      const NS = "http://www.w3.org/2000/svg";
+      const sv = document.createElementNS(NS, "svg");
+      sv.setAttribute("preserveAspectRatio", "none");
+      sv.setAttribute("viewBox", "0 0 " + LW + " " + LH);
+      sv.style.cssText = "position:absolute;left:0;top:0;z-index:2;pointer-events:none;display:none";
+      const df = document.createElementNS(NS, "defs");
+      const mk = document.createElementNS(NS, "mask");
+      mk.setAttribute("id", "wpBurnMask");
+      mk.setAttribute("maskUnits", "userSpaceOnUse");
+      mk.setAttribute("x", "0"); mk.setAttribute("y", "0");
+      mk.setAttribute("width", LW); mk.setAttribute("height", LH);
+      const pa = document.createElementNS(NS, "path");
+      pa.setAttribute("id", "wpBurnMaskPath");
+      pa.setAttribute("fill", "#fff"); pa.setAttribute("fill-rule", "evenodd");
+      mk.appendChild(pa); df.appendChild(mk); sv.appendChild(df);
+      const im = document.createElementNS(NS, "image");
+      im.setAttribute("id", "wpBurnImg");
+      im.setAttribute("x", "0"); im.setAttribute("y", "0");
+      im.setAttribute("width", "100%"); im.setAttribute("height", "100%");
+      im.setAttribute("preserveAspectRatio", "xMidYMid slice");
+      im.setAttribute("mask", "url(#wpBurnMask)");
+      sv.appendChild(im);
+      (document.querySelector(".wallpaper") || document.body).appendChild(sv);
+      _wpBurnSvg = sv;
+    }
+    _wpBurnSvg.style.display = (show === false) ? "none" : "";
+    return _wpBurnSvg;
+  } catch (e) { return null; }
+}
 function fxBurn(to, from, rim, id, fromId){
   const dur = WP_DUR * 1.25;
   const W = Math.max(window.innerWidth, 320);
@@ -2882,6 +2915,7 @@ function fxBurn(to, from, rim, id, fromId){
       setTimeout(function () {
         wpHideLayer(fromId);
         try { applyMask("none"); } catch (e) { /* 无所谓 */ }
+    try { _wpBurnCarrier(false); } catch (e) { /* 无所谓 */ }
       }, 170);
     } else {
       wpHideLayer(fromId);
@@ -2989,7 +3023,34 @@ function fxBurn(to, from, rim, id, fromId){
       chars.push(blob(q.x + MX, q.y + MY, r * 0.985, q.lobes, q.amp, q.ph, wob));  // 炭化：略小
     }
     if (holes.length){
-      applyMask(svgURI(holes, maskPaint));;
+      applyMask(svgURI(holes, maskPaint));
+
+    /* ★★★ 2026-09-28：**改用 SVG 载层来吃旧图**（与墨染载层同一套机制、真机验证可用）。
+       遮罩是 DOM 里的 <mask>（非 data-URI）⇒ 不存在被丢弃的问题。
+       载层一旦就绪就把真身 from 藏起来：屏幕上的"旧图"由载层承担 ⇒
+       它的显示只取决于这张 mask ⇒ **旧图不可能再被"带回来"**。 */
+    try {
+      const _sv = _wpBurnCarrier(true, LW, LH);
+      if (_sv) {
+        const _st = from.parentElement;
+        if (_st) {
+          _sv.style.left = _st.offsetLeft + "px"; _sv.style.top = _st.offsetTop + "px";
+          _sv.style.width = _st.offsetWidth + "px"; _sv.style.height = _st.offsetHeight + "px";
+        }
+        const _pm = document.getElementById("wpBurnMaskPath");
+        if (_pm) _pm.setAttribute("d", "M0 0H" + LW + "V" + LH + "H0Z" + holes.join(""));
+        const _im = document.getElementById("wpBurnImg");
+        if (_im) {
+          const _bg = (from.style.backgroundImage || "").replace(/^url\(["']?/, "").replace(/["']?\)$/, "");
+          if (_bg && _bg !== _wpBurnImgSrc) {
+            _im.setAttribute("href", _bg);
+            try { _im.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", _bg); } catch (e4) {}
+            _wpBurnImgSrc = _bg;
+          }
+          if (_wpBurnImgSrc) from.style.visibility = "hidden";
+        }
+      }
+    } catch (e) { /* 无所谓 */ };
       glow.style.backgroundImage = svgURI(lines, strokePaint("rgba(255,140,40,.85)", 9));
       core.style.backgroundImage = svgURI(cores, strokePaint("rgba(255,242,190,.98)", 2.4));
       char.style.backgroundImage = svgURI(chars, strokePaint("rgba(58,30,16,.8)", 2));
