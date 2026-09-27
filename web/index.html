@@ -2790,6 +2790,19 @@ function _wpBurnCarrier(show, LW, LH) {
   } catch (e) { return null; }
 }
 function fxBurn(to, from, rim, id, fromId){
+  /* ★★★ 2026-09-28：**强制旧层在最上**（用户："有时能带走旧图、有时整张都在"）。
+     两个图层 wp-a / wp-b 轮流当旧层，而 DOM 里 wp-b 永远画在 wp-a 上面
+     ⇒ 只有当"旧层恰好是 wp-b"时，遮罩吃它才看得见；旧层是 wp-a 时，
+       新图（wp-b）本来就在上面 ⇒ 无论遮罩如何都"看起来正常"。
+     这就是"时好时坏"的二元来源。这里用 z-index 强制：燃烧期间旧层永远在上，
+     让"遮罩吃旧图"这件事每次都真的发生、每次都看得见。 */
+  try {
+    const _fromSt = from.parentElement, _toSt = to.parentElement;
+    if (_fromSt && _toSt) {
+      _fromSt.style.zIndex = "3";
+      _toSt.style.zIndex = "2";
+    }
+  } catch (e) { /* 无所谓 */ }
   const dur = WP_DUR * 1.25;
   const W = Math.max(window.innerWidth, 320);
   const H = Math.max(window.innerHeight, 320);
@@ -2922,6 +2935,7 @@ function fxBurn(to, from, rim, id, fromId){
       try { anim(_fs, [{opacity:1},{opacity:0}], {duration:150, easing:"linear"}); } catch (e) { /* 无所谓 */ }
       setTimeout(function () {
         try { _wpBurnCarrier(false); } catch (e) { /* 无所谓 */ }
+  try { ["wp-a","wp-b"].forEach(function(_i){ const _s=document.getElementById(_i); if(_s){ _s.style.removeProperty("z-index"); } }); } catch (e) { /* 无所谓 */ }
         try { from.style.display = "none"; } catch (e) { /* 无所谓 */ }   /* ★ display:none 无法被动画/样式优先级推翻 ⇒ 旧图绝不可能再被显示 */
     wpHideLayer(fromId);
         try { applyMask("none"); } catch (e) { /* 无所谓 */ }
