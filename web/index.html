@@ -3967,6 +3967,13 @@ function finishSplash(){
   clearTimeout(window.__accelSplashFailsafe);   // 主脚本接手，撤掉内联脚本的兜底
   const sp = document.getElementById("splash");
   if (!sp || sp.hidden) return;
+  /* ★★★ 2026-09-28：**幂等闸门**。
+     用户："快速点击跳过开屏后，若 1 秒内继续点击，开屏那些东西还会闪一下"。
+     原因：`hidden` 要等 1500ms 才置位，这期间开屏仍可见、点击仍会再次调用本函数
+     ⇒ 出场/入场动画被**重播** ⇒ 闪一下（正好落在"1 秒内"）。
+     闸门：收尾只允许发生一次；之后无论点击多少次都直接返回。 */
+  if (sp.__finishing) return;
+  sp.__finishing = true;
   /* ★★ 用**显式 Web Animation** 收尾，不再靠 CSS transition。
      为什么换：`.splash.out` 这种"同一帧加类"的写法，浏览器可能把
      "加类"和"初始样式"**合并成一次样式计算** ⇒ 看不到"从 A 到 B"的变化
