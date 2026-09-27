@@ -3292,7 +3292,6 @@ function fxInk(to, from, rim){
     /* 已改用背景图渲染，不再需要 xlink:href */
   }
   img.style.display = "";
-  try { const _sv = img.closest ? img.closest("svg") : null; if (_sv) _sv.style.display = ""; } catch (e) { /* 无所谓 */ }
 
   setBias(BIAS0);
   const t0 = performance.now();
@@ -3344,7 +3343,6 @@ function fxInk(to, from, rim){
     try { if (raf) cancelAnimationFrame(raf); } catch (e) { /* 老 WebView */ }
     wpHideEl(from, from.parentElement);              // ★ 整层藏
     try { img.style.display = "none"; } catch (e) { /* 无所谓 */ }
-  try { const _sv2 = img.closest ? img.closest("svg") : null; if (_sv2) _sv2.style.display = "none"; } catch (e) { /* 无所谓 */ }
   }, Math.max(60, Math.round(dur) + 80));
 
   // 旧层保持可见（被墨吃掉），只做极轻微推近；时长与墨的生长一致
