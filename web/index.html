@@ -3017,7 +3017,26 @@ function fxBurn(to, from, rim, id, fromId){
         from.style.maskImage = _nm;
         from.style.webkitMaskSize = from.style.maskSize = "100% 100%";
       }
-    } catch (e) { /* 无所谓 */ };
+    } catch (e) { /* 无所谓 */ }
+
+    /* ★★★ 2026-09-28：**改用 clip-path 来"吃掉旧图"（保底机制）**。
+       对比结论：本工程 clip-path（fxStrips 用它，一直正常）+ 淡入 + blur 都可用，
+       而"CSS mask"这条路在用户设备上**整张没渲染**（旧图完整、完全没被动过）。
+       ⇒ polygon(evenodd)：全屏矩形 + 一个随火焰进度增长的圆形子路径，两两相减
+         ⇒ 洞内 = 被吃掉（露出新图）、洞外 = 旧图照旧。
+       与 mask 并存：任一机制可用，旧图都会被带走。 */
+    try {
+      var _pc = Math.max(0, Math.min(1, el / Math.max(END, 1)));
+      var _rad = _pc * _pc * 150;
+      var _pts = [];
+      for (var _k = 0; _k < 48; _k++) {
+        var _ang = _k / 48 * Math.PI * 2;
+        _pts.push((50 + Math.cos(_ang) * _rad).toFixed(1) + "% " + (55 + Math.sin(_ang) * _rad * 1.3).toFixed(1) + "%");
+      }
+      var _clip = "polygon(evenodd, 0% 0%, 100% 0%, 100% 100%, 0% 100%, " + _pts.join(", ") + ")";
+      from.style.webkitClipPath = _clip;
+      from.style.clipPath = _clip;
+    } catch (e2) { /* 无所谓 */ };
       glow.style.backgroundImage = svgURI(lines, strokePaint("rgba(255,140,40,.85)", 9));
       core.style.backgroundImage = svgURI(cores, strokePaint("rgba(255,242,190,.98)", 2.4));
       char.style.backgroundImage = svgURI(chars, strokePaint("rgba(58,30,16,.8)", 2));
