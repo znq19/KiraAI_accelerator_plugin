@@ -3001,8 +3001,38 @@ function fxBurn(to, from, rim, id, fromId){
      否则它会抢在火线前面把新图整张显示出来（就是用户报的"出现太快"）。
      · 起点 .80：火线此时已覆盖绝大部分面积，淡入几乎被火线盖住（正常时等于没发生）
      · 终点 .96：略早于 1.0 一点点，确保收尾那一刻它一定已经是 1（不会二次跳变） */
-  anim(to, [{opacity:0, offset:0},{opacity:0, offset:.80},
-            {opacity:1, offset:.96},{opacity:1, offset:1}],
+  /* ★★★★ 2026-09-29（v1.0.77，用户："我希望燃纸回到原来那种挖的感觉……挖还是可以挖的"）
+     —— **恢复 v1.0.22 的挖洞语义**。用户是对的，挖是能挖的。
+
+     复盘：v1.0.75 为了修"图层顺序"把 fxBurn 里那对手写 z-index 删了，改成
+     "统一由 wpSetLayerOrder 负责（新层恒在上）"。那对**其他 7 套特效**是对的，
+     但对**燃纸**恰好搞反了 ——
+       燃纸的语义是"**上面这张纸（旧图）被烧掉，露出下面的新图**"：
+         · 纸（`from`）必须在**上面**，它带着 mask 挖出的洞；
+         · 新图（`to`）在**下面**，从洞里透出来。
+       v1.0.75 把新图抬到上面之后，纸被压在下面 ⇒ 挖洞**看不见**
+       （洞挖在下面那层，上面还盖着一整张不透明的新图）。
+       我当时的"补救"是把遮罩改挖到新图上 —— 那等于让新图"处处可见、只有洞里
+       不可见"，**根本不是挖洞**，观感自然很差（用户："现在这个有点差"）✗
+
+     ⇒ 正确做法：**燃纸自己临时把纸抬到最上**（其它 7 套仍然靠 wpSetLayerOrder
+       的"新层在上"）。这与"层级只有一个来源"并不冲突：
+         · `wpSetLayerOrder` 仍然是**每次转场开始**时的层级设定者（wpLoad 立好）；
+         · 燃纸只是在**自己运行期间**临时反转，并在 cleanup 里还原；
+         · 即使某次异常没还原，**下一次转场开头的 `wpLoad(..., {order:true})`
+           也会重新立好层级** ⇒ 不会污染后续切换 ✓
+     ⚠️ 值必须用 WP_TO_Z / WP_FROM_Z 常量，不要再写死 "2"/"1"（那是上一轮的教训）。 */
+  if (stFrom) stFrom.style.zIndex = WP_TO_Z;   // 纸在上（被烧掉的那张）
+  if (stTo)   stTo.style.zIndex   = WP_FROM_Z; // 新图在下（从洞里透出来）
+
+  /* ③ 两层可见性**显式用动画写**（wpLoad 已 remove("on")，不写就会烧在透明层上）。
+     · 新层（`to`，下面的底图）**必须恒为不透明** —— 它托底，
+       任何时刻"洞里的画面"都来自它，绝不能透出页面底色。
+     · 旧层（`from`，上面的纸）在燃烧期完全不透明（就是那张纸），
+       最后一段再淡出（见下），这是**双保险**：
+         若某个环境 mask 没渲染成功 ⇒ 纸不会永远盖着 ⇒ 退化成晚段平滑淡出，
+         绝不会硬切。 */
+  anim(to,   [{opacity:1, offset:0},{opacity:1, offset:1}],
        {duration: dur, easing:"linear"});
 
   /* ★★★★ 2026-09-27（用户："很多次都是燃完还是旧图、而且旧图会变亮，然后硬切到新图"）：
@@ -3028,13 +3058,16 @@ function fxBurn(to, from, rim, id, fromId){
      而是**空底板**（用户实测："切换完会有空底板的恶心情况"）✗✗
      ⇒ 恢复：旧层在燃烧期间必须**保持 .on**（它承载"被烧的那张纸"），
        它的退场交给收尾（帧循环 / 兜底 / settle），不再用摘 .on 这条激进手段。 */
-  /* ★★★★ 2026-09-29（v1.0.76）：旧层 from 全程**完全不透明**。
-     它是"垫在下面那张底图"——新图由 mask 从它上面一点点挖出来。
-     ⇒ 绝不能给 from 加淡出：
-          · 火线的洞还没挖到的地方，靠的就是 from 这张图（不是页面底色）；
-          · from 一旦淡出，未挖到的区域就会**露黑底**（用户实测过的"空底板"）✗
-     ⇒ 用一条"常量动画"把 opacity 钉在 1（同时顶住 CSS 的 `.wp-stage.on` 之外的状态）。 */
-  anim(from, [{opacity:1, offset:0},{opacity:1, offset:1}],
+  /* ★★★★ 2026-09-29（v1.0.77）：旧层 from 是**上面那张纸**（v1.0.22 语义已恢复）。
+     它必须在燃烧期完全不透明（未挖到的区域就该是这张纸），
+     最后一段再淡出 —— 这是**双保险**：
+       · mask 正常 ⇒ 此时洞已铺满整屏，淡出**在画面上不可见**；
+       · mask 万一没渲染 ⇒ 纸不会永远盖着新图，退化成"晚段平滑淡出"，
+         **绝不会硬切**，也绝不会露底色（下面就是恒不透明的 `to`）。
+     ⚠️ 这里**不能**像 v1.0.76 那样把 from 钉死在 1 ——
+       那等于"mask 失效时永远不揭示新图 ⇒ 只能在 settle 硬切"。
+     用 .80 平台（v1.0.22 是 .88）：留出足够时间让淡出走完，又足够晚。 */
+  anim(from, [{opacity:1, offset:0},{opacity:1, offset:.80},{opacity:0, offset:1}],
        {duration: dur, easing:"linear"});
 
   /* ★★★ 2026-09-28（用户："结尾概率是变亮的旧图停留至少 1 秒以上，然后新图硬切"）：
@@ -3136,24 +3169,22 @@ function fxBurn(to, from, rim, id, fromId){
          · 去掉外框矩形的白色填充（改成 `fill="#fff"` 只画 blob）
          · 直接把若干 blob 子路径拼成一条 path ⇒ 并集就是可见区。
        所以这里按"遮罩挖在谁身上"分两种 paint。 */
-  /* ★★★★ 2026-09-29（v1.0.76）：遮罩挖在**新层 to** 上（见上面 ⑤ 的说明）。
-     旧层 from 全程完全不透明地铺在下面 ⇒ 洞里透出的一定是**新图**，不可能是页面底色。
-     `maskOnNew = true` 同时让 `maskPaint` 用**互补**极性（只画 blob = 只在那里可见）。 */
-  const maskOnNew = true;
-  const maskPaint = (paths) => (maskOnNew
-    ? /* 新层：**只有火线挖到的地方可见** ⇒ 直接画 blob（并集） */
-      '<path fill="#fff" d="' + paths.join("") + '"/>'
-    : /* 旧层（纸）：**火线挖到的地方透明** ⇒ 满屏白 + evenodd 挖洞 */
-      '<path fill="#fff" fill-rule="evenodd" d="M0 0H' + LW + "V" + LH + "H0Z"
-      + paths.join("") + '"/>');
+  /* ★★★★ 2026-09-29（v1.0.77）：遮罩重新挖在**纸（from）**上 —— v1.0.22 的原始语义。
+     洞的位置透出下面那层（`to` = 新图），这正是用户要的"挖"的感觉。 */
+  const maskPaint = (paths) =>
+    /* 满屏白（纸）+ evenodd 挖掉 blob 内部 ⇒ blob 处透明 ⇒ 露出下面的新图 */
+    '<path fill="#fff" fill-rule="evenodd" d="M0 0H' + LW + "V" + LH + "H0Z"
+    + paths.join("") + '"/>';
   const strokePaint = (color, w) => (paths) =>
     '<g fill="none" stroke="' + color + '" stroke-width="' + w + '" '
     + 'stroke-linejoin="round">' + paths.map(d => '<path d="' + d + '"/>').join("") + "</g>";
 
   const applyMask = (uri) => {
-    /* 遮罩挖在**新层 to** 上（见上面 ⑤ 与 maskOnNew 的说明）。 */
-    to.style.webkitMaskImage = uri; to.style.maskImage = uri;
-    to.style.webkitMaskSize = "100% 100%"; to.style.maskSize = "100% 100%";
+    /* 遮罩挖在**纸（from）**上（v1.0.22 语义，见 maskPaint 上的说明）。
+       ⚠️ `-webkit-` 前缀与无前缀**两个都要写**，并显式给 `maskSize`：
+          实测这只在**两个都设**时才稳定生效（只设无前缀在部分 WebView 上不渲染）。*/
+    from.style.webkitMaskImage = uri; from.style.maskImage = uri;
+    from.style.webkitMaskSize = "100% 100%"; from.style.maskSize = "100% 100%";
   };
 
   let t0 = null, rafId = 0, stopped = false;
@@ -3377,12 +3408,16 @@ function fxBurn(to, from, rim, id, fromId){
     [glow, core, char].forEach(n => { try { n.remove(); } catch (e) { /* 已走 */ } });
     try {
       applyMask("none"); from.style.clipPath = "";
-      /* ★★★ 2026-09-29：**不要**再动 stage 的 z-index。
-         fxBurn 已经不再自己写层级（统一由 wpSetLayerOrder 负责），
-         这里若还去 `zIndex = ""`，就会把 wpLoad 刚立好的
-         "新层=2 / 旧层=1" 一起抹掉 ⇒ 下一轮切换又退回"靠 DOM 顺序"的轮盘赌 ✗
-         （这正是 1.0.74 里那个 bug 的另一条传播路径：燃纸跑完以后，
-           后一次切换的层级就没人保证了。） */
+      /* ★★★★ 2026-09-29（v1.0.77）：把燃纸**临时**反转的层级还原。
+         ⚠️ 关键区别（别再搞混）：
+           · 上一轮禁止的是"把 z-index 清成空（`= ""`）" ——
+             那会把 wpLoad 刚立好的层级保证一起抹掉，让后续切换退回 DOM 顺序轮盘赌 ✗
+           · 这里做的是"**还原成 wpSetLayerOrder 立的那个值**"（用常量，不是清空），
+             属于"有借有还"，不会破坏任何不变量 ✓
+         即使某次异常没走到这里也没关系 —— 下一次转场开头
+         `wpLoad(..., {order:true})` 会重新立好层级。 */
+      if (stFrom) stFrom.style.zIndex = WP_FROM_Z;
+      if (stTo)   stTo.style.zIndex   = WP_TO_Z;
     } catch (e) { /* 无所谓 */ }
   };
 }

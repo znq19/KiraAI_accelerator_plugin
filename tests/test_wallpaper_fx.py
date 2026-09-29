@@ -127,9 +127,18 @@ print("═══ 燃纸层级（**统一由 wpSetLayerOrder 负责**，特效不
 #       "旧图约 1 秒后闪现"的另一条传播路径。
 #   ⇒ 新契约：图层顺序**只允许有一个来源**（wpLoad → wpSetLayerOrder）。
 #     特效（含燃纸）**一律不许**碰 stage 的 z-index，也不能在收尾把它清空。
-check("★★★ fxBurn **不再自己写** stage 的 z-index（统一交给 wpSetLayerOrder）",
-      "style.zIndex" not in _b)
-check("★★★ fxBurn 收尾**不得清空** stage 的 z-index（清空 = 抹掉层级保证）",
+# ★★★★ 2026-09-29（v1.0.77，**契约反转**）：燃纸**需要**自己临时反转层级。
+#   燃纸的语义是"上面那张纸（旧图）被烧掉，露出下面的新图" ——
+#   纸必须在**最上面**带着 mask 挖出的洞，新图在**下面**从洞里透出来。
+#   v1.0.75 把这一对 z-index 删掉（改成"新层恒在上"），纸被压到下面 ⇒ 挖洞看不见
+#   ⇒ 用户："我希望燃纸回到原来那种挖的感觉……现在这个有点差"。
+#   ⚠️ 但**依然禁止**把 z-index 清成空（`= ""`）—— 那会抹掉 wpLoad 立的层级保证。
+#   ⇒ 正确做法：临时反转 + 收尾**还原成常量值**（有借有还）。
+check("★★★ fxBurn 临时把纸抬到最上（v1.0.22 挖洞语义）", "stFrom.style.zIndex = WP_TO_Z" in _b)
+check("★★★ fxBurn 把新层压到下面（洞里透出新图）", "stTo.style.zIndex   = WP_FROM_Z" in _b or "stTo.style.zIndex = WP_FROM_Z" in _b)
+check("★★★ fxBurn 收尾还原层级为**常量**（不是清空）",
+      "stFrom.style.zIndex = WP_FROM_Z" in _b and "stTo.style.zIndex   = WP_TO_Z" in _b)
+check("★★★ fxBurn **不得**把 z-index 清成空（那会抹掉层级保证）",
       'style.zIndex = ""' not in _b)
 check("★★★ 层级保证的唯一来源是 wpLoad → wpSetLayerOrder",
       "wpSetLayerOrder(id)" in HTML and "WP_TO_Z" in HTML and "WP_FROM_Z" in HTML)
