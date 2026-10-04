@@ -39,6 +39,11 @@ from .auto_thinking import (
     provider_effort,
     resolve_style,
 )
+from .config_migrations import (
+    MIGRATION_DELAY_S,
+    marker_applied as migration_marker_applied,
+    run_nothink_migration,
+)
 
 PLUGIN_ID = "kira_accelerator"
 
@@ -134,7 +139,10 @@ class AcceleratorPlugin(BasePlugin):
         # L5
         self.thinking_enabled = bool(c_thk.get("enabled", False))
         self.thinking_style = str(c_thk.get("style", "compatible"))
-        self.thinking_inject_nothink = bool(c_thk.get("inject_nothinking", False))
+        # 判定为"不需要思考"时是否**主动发关闭参数**（默认开：v1.0.78 起）。
+        # 旧版默认关，后果是"判了关、模型却还在思考"（2026-10-05 用户实测）——
+        # 升级时会自动迁移一次旧配置（见 config_migrations.py），之后以用户设置为准。
+        self.thinking_inject_nothink = bool(c_thk.get("inject_nothinking", True))
         # 开思考时是否"只开、强度照用提供商配的"（默认关：插件按判定调强度）
         self.thinking_follow_provider = bool(
             c_thk.get("follow_provider_effort", False))
@@ -174,6 +182,9 @@ class AcceleratorPlugin(BasePlugin):
         #: 台账最后一次活动时间（用于清理陈旧状态，双保险）
         self._ledger_ts: dict[str, float] = {}
         self._proxy_cache: dict[tuple, LLMClientProxy] = {}
+        # 一次性配置迁移（v1.0.78）：定时器/任务引用（防被 GC，terminate 可取消）
+        self._migration_timer = None
+        self._migration_task = None
         self._stats = {
             "turns": 0, "steps": 0,
             "tool_signals": 0, "strip_calls": 0, "parallel_batches": 0, "content_normalized": 0,
@@ -306,6 +317,50 @@ class AcceleratorPlugin(BasePlugin):
         except Exception:  # noqa: BLE001
             pass          # 存不下不影响功能
 
+    # ══════════════════════════════════════════════════════════
+    # 一次性配置迁移（v1.0.78）—— 见 config_migrations.py 的完整说明
+    # ══════════════════════════════════════════════════════════
+    def _migration_data_dir(self):
+        """迁移标记文件所在目录（插件数据目录）。取不到返回 None。"""
+        try:
+            return self.ctx.get_plugin_data_dir()
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _schedule_nothink_migration(self) -> None:
+        """把「inject_nothinking 一次性迁移为开」排到插件初始化完成之后执行。
+
+        为什么必须延迟：迁移通过框架的 update_plugin_config 写盘，而它**会热重载
+        本插件** —— 不能在 initialize() 的调用栈里立刻执行（那会让框架在"正在
+        初始化我们"的过程中把我们卸载重建）。延迟到初始化完成后，只执行一次。
+        """
+        try:
+            if getattr(self.ctx, "plugin_mgr", None) is None:
+                return                      # 测试 / 无管理器：不迁移
+            data_dir = self._migration_data_dir()
+            if data_dir is None or migration_marker_applied(data_dir):
+                return                      # 已经迁移过（或无处存标记）
+            loop = asyncio.get_running_loop()
+            self._migration_timer = loop.call_later(
+                MIGRATION_DELAY_S, self._spawn_nothink_migration)
+        except Exception:  # noqa: BLE001
+            logger.exception("[accel] 配置迁移调度失败（忽略，下次加载重试）")
+
+    def _spawn_nothink_migration(self) -> None:
+        """定时器回调：创建迁移任务（引用存实例上，防被 GC）。"""
+        try:
+            self._migration_task = asyncio.get_running_loop().create_task(
+                self._run_nothink_migration())
+        except Exception:  # noqa: BLE001
+            logger.exception("[accel] 配置迁移任务启动失败（忽略）")
+
+    async def _run_nothink_migration(self) -> None:
+        try:
+            await run_nothink_migration(self, PLUGIN_ID,
+                                        self._migration_data_dir(), log=logger)
+        except Exception:  # noqa: BLE001
+            logger.exception("[accel] 配置迁移失败（忽略，下次加载重试）")
+
     async def initialize(self) -> None:
         logger.info(
             "[accel] initialize（观测=%s 强制流式=%s 抢先发送=%s 自动思考=%s）",
@@ -326,8 +381,20 @@ class AcceleratorPlugin(BasePlugin):
             self._install_memory_dump()
         # ★ 把上次累计的统计读回来 —— 热重载（保存配置）不会清零
         self._load_stats()
+        # ★ v1.0.78 一次性配置迁移：旧版的 inject_nothinking=false 改成 true。
+        #   与 thinking_enabled 无关（这是"配置默认值"的迁移）；仅在需要且安全时
+        #   才动（见 config_migrations.py），失败安静跳过、下次重试。
+        self._schedule_nothink_migration()
 
     async def terminate(self) -> None:
+        # ★ 取消尚未触发的一次性迁移定时器（已触发的任务由自身守卫兜底：
+        #   被替换/停用时不会再动配置）
+        try:
+            _t = getattr(self, "_migration_timer", None)
+            if _t is not None:
+                _t.cancel()
+        except Exception:  # noqa: BLE001
+            pass
         # ★ 卸载前把统计落盘（热重载会走这里，下次 initialize 再读回来）
         try:
             self._stats_saved_at = 0.0      # 绕过节流，保证这次一定写
@@ -442,6 +509,12 @@ class AcceleratorPlugin(BasePlugin):
             scanned = getattr(d, "scanned_chars", None)
             if scanned is not None:
                 think_txt += "[%d字]" % scanned
+            # ★ v1.0.78：把「本轮实际有没有把思考参数发出去」也打出来。
+            #   以前只打判定结果，判定与实际脱节时（例如旧默认下判了"关"却不发
+            #   关闭参数）日志会说"思考=关"而模型仍在思考 —— 现在一眼可见。
+            applied = getattr(d, "applied", "") or ""
+            if applied:
+                think_txt += "→%s" % applied
             logger.info(
                 "[accel] 一轮结束 sid=%s steps=%d 抢先发=%d 首段=%.2fs 思考=%s",
                 sid, len(getattr(final_result, "step_results", []) or []),
@@ -1118,6 +1191,10 @@ class AcceleratorPlugin(BasePlugin):
         elif self.thinking_inject_nothink:
             params = build_nothinking_extra_body(style)
         else:
+            # 用户显式关了「不需要时显式关闭思考」⇒ 尊重选择、不去动提供商设置。
+            # 但把这一点记进判定对象：日志会显示"未注入关闭参数"，
+            # 让"判了关、实际没关"永远不会再悄悄发生（2026-10-05 用户实测的坑）。
+            decision.applied = "未注入关闭参数"
             return kwargs
         # ★★★ 2026-09-28（用户："是否能由我们来成功控制"）：
         #   注入时**清掉提供商那份同维度的思考键**，让"思不思考"在请求体里
@@ -1132,8 +1209,11 @@ class AcceleratorPlugin(BasePlugin):
                               for k in params)
         _clear_effort = ((not decision.enabled) or (not self.thinking_follow_provider)
                          or _has_our_effort)
-        return apply_thinking_params(kwargs, params, client_kind,
-                                     clear_effort=_clear_effort)
+        kwargs = apply_thinking_params(kwargs, params, client_kind,
+                                       clear_effort=_clear_effort)
+        # ★ v1.0.78：回填"实际动作"（日志展示用）——判定与请求体脱节时一眼可见
+        decision.applied = "已注入开启参数" if decision.enabled else "已注入关闭参数"
+        return kwargs
 
 
     def _install_parallel_tools(self) -> None:

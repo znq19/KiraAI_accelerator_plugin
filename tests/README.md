@@ -12,7 +12,7 @@ sh run_tests.sh          # 在插件根目录执行
 `patches` / `stream_first` / `early_sent` / `stream_engine` / `auto_thinking` /
 `parallel` / `parallel_equiv` / `rotation` / `compat` / `load` /
 `dup_send_guard` / `v102_features` / `wallpaper_fx` / `frontend_audit` /
-`log_behaviour` / `thinking_media` / `ledger_lifecycle` 等
+`log_behaviour` / `thinking_media` / `thinking_default_migration` / `ledger_lifecycle` 等
 （总数会随版本演进，确切清单以 `run_tests.sh` 里不带框架依赖的那些为准）。
 
 **集成套件（22 个）** —— 需要 **KiraAI 框架源码**（少数还需要 `node`），

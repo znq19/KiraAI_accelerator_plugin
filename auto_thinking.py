@@ -71,7 +71,7 @@ SIMPLE_HINTS = (
 class ThinkingDecision:
     """一次思考判定的结果。"""
 
-    __slots__ = ("enabled", "score", "signals", "effort", "scanned_chars")
+    __slots__ = ("enabled", "score", "signals", "effort", "scanned_chars", "applied")
 
     def __init__(self, enabled: bool, score: float, signals: list[str], effort: str,
                  scanned_chars: int = 0):
@@ -81,6 +81,10 @@ class ThinkingDecision:
         self.effort = effort
         #: 本轮判定的"用户消息"有多少字 —— 用来发现"扫到了不该扫的文本"
         self.scanned_chars = scanned_chars
+        #: 注入层回填的"实际动作"（"已注入开启参数"/"已注入关闭参数"/
+        #: "未注入关闭参数"）。日志会带上它 —— 让"判定与实际脱节"一眼可见
+        #: （2026-10-05 用户实测：日志说"思考=关"，模型却还在思考）。
+        self.applied = ""
 
     def __repr__(self):
         return (f"ThinkingDecision(enabled={self.enabled}, score={self.score:.1f}, "

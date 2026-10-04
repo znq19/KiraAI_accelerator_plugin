@@ -92,6 +92,7 @@ run "★真流式端到端"           tests/test_stream_real.py
 run "★壁纸轮换真逻辑"         tests/test_rotation_live.py
 run "★思考注入覆盖面"         tests/test_thinking_providers.py
 run "★★思考控制权（压住/打开）" tests/test_thinking_conflict.py
+run "★★默认值迁移（仅一次）"   tests/test_thinking_default_migration.py
 
 # ★ 守卫：tests/ 里每个测试文件都必须被上面跑到。
 #   之前就吃过亏 —— 脚本引用了 16 个文件，仓库里只提交了 8 个，

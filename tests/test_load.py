@@ -338,8 +338,8 @@ async def main() -> None:
         messages=[], user_prompt=[], tools=[], tool_set=None)
     req3.__dict__["_accel_thinking"] = ThinkingDecision(False, 0.0, ["简单"], "low")
     kw3 = inner._build_request_kwargs(req3)
-    check("不开思考时不注入（未开启 inject_nothinking）",
-          not (kw3.get("extra_body") or {}).get("enable_thinking"),
+    check("★ 不开思考时按新默认注入显式关闭（inject_nothinking 默认已开，v1.0.78）",
+          (kw3.get("extra_body") or {}).get("enable_thinking") is False,
           f"实际={kw3.get('extra_body')}")
 
     print("\n3b) ★ 流式代理缓存：键与上限")

@@ -29,6 +29,7 @@ thinking_enabled/reasoning_effort）。修复前我们只发自己那两把钥�
   ③ 「跟随提供商强度」不被误伤（max 保留、只清"要不要思考"）
   ④ 非思考字段（temperature / max_tokens）一个都不许动
   ⑤ 反向验证：修复前的行为（不清场）必须能复现"压不住"
+  ⑥ (v1.0.78) 默认路径：cfg 默认 ⇒ 判【关】即真的关 + applied 三态回填
 """
 from __future__ import annotations
 
@@ -121,7 +122,10 @@ _LIVE = []
 def make_plugin(style="compatible", follow=False, nothink=True):
     """★ 必须先卸载上一个实例的补丁再装 —— `install()` 有幂等（R1）：
     目标已打过标记时**不会重复包装**，否则本次插件根本没装上、
-    调用会落到**上一个实例**的包装上（本套件第一版就踩了这个坑）。"""
+    调用会落到**上一个实例**的包装上（本套件第一版就踩了这个坑）。
+
+    nothink=None 表示"**不覆盖**，直接用 cfg 默认值" —— 用来验证 v1.0.78
+    的默认链路（cfg={} ⇒ inject_nothink=True）。"""
     while _LIVE:
         try:
             _LIVE.pop().patches.uninstall_all()
@@ -131,7 +135,8 @@ def make_plugin(style="compatible", follow=False, nothink=True):
     p.thinking_enabled = True
     p.thinking_style = style
     p.thinking_follow_provider = follow
-    p.thinking_inject_nothink = nothink
+    if nothink is not None:
+        p.thinking_inject_nothink = nothink
     p.normalize_empty_content = False
     p._stats = {}
     p._install_request_hook()
@@ -255,6 +260,40 @@ _at.apply_thinking_params(fixed, old_style, "openai", clear_effort=True)
 offs_new, ons_new = verdict(all_keys(fixed))
 check("★★★ 新逻辑：同一输入清干净（只剩我们的开）",
       not offs_new and ons_new, f"残留关={offs_new} 全部={fixed}")
+
+print()
+print("═══ 7) ★★★ v1.0.78 默认路径：不手动设任何开关，判【关】就真的关")
+p = make_plugin(nothink=None)          # ← 不覆盖：走 cfg 默认（新默认=True）
+check("★★ cfg 默认链路：inject_nothink=True（用户无需设置）",
+      p.thinking_inject_nothink is True, f"实际={p.thinking_inject_nothink}")
+c7 = build_client("openai", ON_SPELLINGS["thinking:{enabled}"])
+r7 = req(False)
+keys7 = all_keys(c7._build_request_kwargs(r7))
+offs7, ons7 = verdict(keys7)
+check("★★★ 默认判【关】：提供商的开拼写被压住（无需打开任何开关）",
+      not ons7, f"残留开={ons7}全部={keys7}")
+check("★★ 默认判【关】：关闭参数真的发出去了（enable_thinking=false）",
+      keys7.get("enable_thinking") is False, f"{keys7}")
+check("★★ applied 回填=已注入关闭参数（日志可见）",
+      r7.__dict__["_accel_thinking"].applied == "已注入关闭参数",
+      repr(getattr(r7.__dict__["_accel_thinking"], "applied", None)))
+
+r7b = req(True)
+c7._build_request_kwargs(r7b)
+check("★★ applied 回填=已注入开启参数（开路径）",
+      r7b.__dict__["_accel_thinking"].applied == "已注入开启参数",
+      repr(getattr(r7b.__dict__["_accel_thinking"], "applied", None)))
+
+# 反向：用户显式关掉该开关 ⇒ 尊重选择（提供商设置不动），applied 标记"未注入"
+p8 = make_plugin(nothink=False)
+c8 = build_client("openai", ON_SPELLINGS["thinking:{enabled}"])
+r8 = req(False)
+keys8 = all_keys(c8._build_request_kwargs(r8))
+offs8, ons8 = verdict(keys8)
+check("★ 显式关掉后：提供商配置原样保留（我们不动手）", bool(ons8), f"{keys8}")
+check("★ applied 回填=未注入关闭参数（日志会如实说明）",
+      r8.__dict__["_accel_thinking"].applied == "未注入关闭参数",
+      repr(getattr(r8.__dict__["_accel_thinking"], "applied", None)))
 
 print()
 print("=" * 60)
