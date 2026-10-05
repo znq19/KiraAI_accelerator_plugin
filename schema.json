@@ -215,12 +215,12 @@
       "inject_nothinking": {
         "type": "switch",
         "name": "Explicitly disable when not needed",
-        "default": false,
-        "hint": "Send an explicit disable flag when thinking is not needed. Some providers reject it.",
+        "default": true,
+        "hint": "Send an explicit disable flag when thinking is not needed. On by default since v1.0.78 (older installs are migrated once); turn it off to leave your provider settings untouched. A few providers may not recognise the flag.",
         "locales": {
           "zh": {
             "name": "不需要时显式关闭思考",
-            "hint": "本轮判定不需要思考时，主动发关闭参数（更省更快，但个别提供商不认该参数）。默认：关。"
+            "hint": "本轮判定不需要思考时，主动发关闭参数（更省更快，但个别提供商不认该参数）。默认：开（自 v1.0.78 起；从旧版本升级会**自动迁移一次**，之后以你的设置为准）。"
           }
         }
       },
