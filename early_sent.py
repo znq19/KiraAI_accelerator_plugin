@@ -278,7 +278,8 @@ def strip_early_sent_smart(text: str, count: int, segments: list | None = None) 
         ① 锚点搜索：`strip_by_content` 能在**任意位置**找到"连续块 = 已发内容
            前缀"的那一段（上例会精确剥掉 E1+E2、原样留下 X 与 T3）✓
         ② 万一连锚点都找不到（文本被改得面目全非）⇒ **不剥**、交回框架原文，
-           并打 error —— 代价最多是"多一条重复"，**绝不删掉从未发出的内容**。
+           细节记 debug —— 代价最多是"多一条重复"，**绝不删掉从未发出的内容**。
+           （真发生重复时，发送层的按内容核对会打 warning，那才是该看的信号。）
           这与本插件一贯的取舍一致："宁可重复，不可丢内容"。
     """
     if count <= 0 or not text:
@@ -288,12 +289,14 @@ def strip_early_sent_smart(text: str, count: int, segments: list | None = None) 
             got = strip_by_content(text, segments)
             if got is not None:
                 return got
-            # 找不到锚点 ⇒ 保守：不剥（原样交回），但**必须留线索**（不是静默失效）
+            # 找不到锚点 ⇒ 保守：不剥（原样交回）。
+            # ★ 2026-10-05 降级为 debug：这是**安全的保守回退**（宁可重复、不丢内容），
+            #   绝大多数场景下锚点其实找得到；真找不到时"可能重复"自有发送层的
+            #   按内容核对会报（那条才是真问题信号）。这里不再打吓人的多行 error。
             import logging
-            logging.getLogger("kira_accelerator").error(
-                "[accel] 剥离：在文本里找不到已发段的内容锚点（文本可能被其它插件"
-                "严重改写）。为避免误删未发内容，本次**不剥离**，整段交回框架 —— "
-                "最坏情况是多发一条重复，绝不会丢内容。已发 %d 段 / 文本 %d 字符",
+            logging.getLogger("kira_accelerator").debug(
+                "[accel] 剥离：文本里锚定不到已发段（或被下游改写），"
+                "本次不剥离、交回框架（已发 %d 段 / 文本 %d 字符）",
                 len(segments), len(text))
             return text
         except Exception:  # noqa: BLE001

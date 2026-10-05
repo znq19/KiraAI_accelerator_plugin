@@ -302,7 +302,10 @@ class StreamEngine:
         if saw_tool_call and emitter is not None and emitter.emitted:
             _mark_early_sent(resp, emitter.emitted, resp.text_response)
             resp.__dict__["_accel_tool_turn_early"] = True
-            logger.warning(
+            # ★ 2026-10-05 降级为 debug：文本先于 tool_calls 到达是**正常且已被
+            #   妥善处理**的情形（已标记、防重复），工具多的会话每轮都打 warning
+            #   纯属噪音。
+            logger.debug(
                 "[accel] 工具轮内已抢先发送 %d 段（文本先于 tool_calls 到达）"
                 "—— 已标记，避免重复发送与上下文残留", len(emitter.emitted))
 

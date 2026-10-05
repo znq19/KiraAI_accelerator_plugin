@@ -924,7 +924,10 @@ class AcceleratorPlugin(BasePlugin):
 
         mp = getattr(self.ctx, "message_processor", None)
         if ctx is None or mp is None or not ctx.sid or ctx.tag_set is None:
-            logger.error("[accel] 抢先发送上下文不完整，本段交回框架发送")
+            # ★ 2026-10-05 降级为 debug：这是**可预期情形**而非故障 ——
+            #   不经过消息管线的 LLM 调用（记忆整理 / JEV 决策等后台调用）
+            #   本来就没有发送上下文，整段交回框架是完全正确的行为。
+            logger.debug("[accel] 无发送上下文（多为后台 LLM 调用），本段交回框架发送")
             return False
 
         # ★★★ 2026-09-28（串会话加固 —— 用户："消息发送到错误会话，比如使用了跨会话功能后"）：
@@ -1003,10 +1006,13 @@ class AcceleratorPlugin(BasePlugin):
         #   ⇒ 表情被塞在文字里一起发出去（用户实测的功能失效）。
         #
         #   语义与框架一致：**让钩子改写列表，然后按改写后的内容发送**。
+        from core.chat import MessageChain
+        # ★ 广播前先记下"本来有没有可发内容" —— 供后面识别「插件接管」（见循环后）。
+        had_sendable = any(
+            isinstance(a, MessageChain) and not a.is_empty() for a in actions)
         actions = await self._broadcast_after_xml_parse(ctx, actions)
 
         delivered = False
-        from core.chat import MessageChain
 
         for action in actions:
             if not isinstance(action, MessageChain) or action.is_empty():
@@ -1058,6 +1064,42 @@ class AcceleratorPlugin(BasePlugin):
             except Exception:  # noqa: BLE001
                 logger.exception("[accel] 补广播 ON_MESSAGE_SENT 失败")
 
+            try:
+                self._stats["early_sent"] += 1
+                if self._stats["first_seg_s"] is None:
+                    self._stats["first_seg_s"] = 0.0
+            except Exception:  # noqa: BLE001
+                pass
+
+        # ★★★ 插件接管识别（2026-10-05，「折扇」插件重复发送事故的根因修复）：
+        #   「在 AFTER_XML_PARSE 里自己发送、并把链从待发列表删掉」是生态惯用
+        #   形状（fold_fan_formatter 等）。广播前有可发链、广播后一条不剩 =
+        #   钩子**接管了本段的投递**。若仍按"我自己没发 = 没投递"把段交回框架，
+        #   框架会再派发一次同一钩子 ⇒ 插件再发一遍 ⇒ 用户看到重复发送
+        #   （线上实证：穗文本 ×2 + 合并转发 ×2）。
+        #   ⇒ 识别为已投递：记台账（发送层的剥离会把它从文本里拿掉，框架那遍
+        #     插件根本见不到它），并补占位结果保持 message_id 位置对齐。
+        #   安全论证：插件若是"过滤器"语义（故意丢弃），不剥离时框架那遍也会
+        #     被同一过滤器再丢一次，结果一致 ⇒ 不丢内容；若是"自发"语义 ⇒
+        #     正好防重复。两种语义下都不丢、不重。
+        #   守卫：tests/test_plugin_takeover.py
+        if not delivered and had_sendable and not any(
+                isinstance(a, MessageChain) and not a.is_empty() for a in actions):
+            logger.info("[accel] 本段已被 AFTER_XML_PARSE 插件接管（待发列表被清空）"
+                        " ⇒ 视为已投递，不再交回框架（防重复发送）")
+            delivered = True
+            try:
+                # 占位结果：框架 _add_message_ids 按位置贴 ID，message_id=None
+                # 会被置为空串（核心 message_manager.py 已处理 None），对齐不破。
+                from core.chat.message_utils import KiraIMSentResult
+                self._early_results.setdefault(_k, []).append(
+                    KiraIMSentResult(message_id=None, ok=True))
+            except Exception:  # noqa: BLE001
+                logger.debug("[accel] 记录接管占位结果失败（不影响已投递的事实）")
+            try:
+                self._mark_sent(ctx)
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 self._stats["early_sent"] += 1
                 if self._stats["first_seg_s"] is None:
@@ -1521,8 +1563,9 @@ class AcceleratorPlugin(BasePlugin):
                 if ledger:
                     # 台账优先（更权威）
                     if n > 0 and n != len(ledger):
-                        # ★ 两边都有但**不一致** —— 这才是真异常，值得留线索
-                        logger.warning(
+                        # 两边都有但不一致 —— 自洽性已破但台账能兜住，
+                        # 记 debug 即可（2026-10-05 降噪：不值得吓用户）
+                        logger.debug(
                             "[accel] 已发段数不一致：响应标记 %d 段、台账 %d 段，以台账为准",
                             n, len(ledger),
                         )
