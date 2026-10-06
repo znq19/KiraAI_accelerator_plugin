@@ -84,6 +84,7 @@ run "★★不可解析段安静交回"     tests/test_unparsable_handback.py
 run "★★跨会话路由（并发/漂移）" tests/test_cross_session_routing.py
 run "★★故障转移不重复（failover）" tests/test_failover_no_dup.py
 run "★★★插件接管识别（防重复发送）" tests/test_plugin_takeover.py
+run "★★交回护栏（root动作/stop）" tests/test_handback_guards.py
 
 
 run "前端URL前缀守卫"         tests/test_frontend_api.py
