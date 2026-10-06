@@ -987,6 +987,19 @@ class AcceleratorPlugin(BasePlugin):
             logger.debug("[accel] 解析失败详情（%s）: %s", type(e).__name__, e)
             return False
 
+        # ★ Root 级标签动作（RootTagAction）必须交回框架 —— 本函数的发送循环
+        #   只处理 MessageChain，遇到它会**静默跳过**；若这段是「链 + root 动作」
+        #   混合，链发了、整段又记了台账 ⇒ 框架剥离后 root 动作**永远不会执行**。
+        #   交回框架由它走 `tag.handle(...)`（语义唯一正确的去处）。
+        #   放在广播**之前**：钩子只该在框架那遍见到这段，不该被执行两次。
+        try:
+            from core.tag import RootTagAction as _RTA
+        except Exception:  # noqa: BLE001
+            _RTA = None
+        if _RTA is not None and any(isinstance(a, _RTA) for a in actions):
+            logger.debug("[accel] 本段含 root 级标签动作，交回框架执行（不抢发）")
+            return False
+
         # ★★ 必须广播 AFTER_XML_PARSE —— 否则「表情独立成行」这类功能会失效。
         #
         #   实测（qq-enhance 插件）：
@@ -1011,6 +1024,14 @@ class AcceleratorPlugin(BasePlugin):
         had_sendable = any(
             isinstance(a, MessageChain) and not a.is_empty() for a in actions)
         actions = await self._broadcast_after_xml_parse(ctx, actions)
+
+        # ★★ 与框架语义对齐：AFTER_XML_PARSE 阶段事件被停止 ⇒ **整批不发**。
+        #   框架 send_xml_messages 此时直接 `return None`（一条都不发）；
+        #   而这里之前只 break 出广播循环、**仍照常发送** —— 内容过滤/拦截类
+        #   插件的「停止」会被抢发路径无视。交回框架，由它走完「停止 ⇒ 不发」
+        #   的统一逻辑（广播里已打过 INFO，这里不再重复记日志）。
+        if getattr(ctx.event, "is_stopped", False):
+            return False
 
         delivered = False
 
