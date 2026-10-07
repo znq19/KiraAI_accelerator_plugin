@@ -26,7 +26,7 @@ if FW is None:
 sys.path.insert(0, FW)
 
 from core.provider.provider import ModelInfo, ModelType                # noqa: E402
-from core.utils.model_clients import OpenAICompatibleLLMClient         # noqa: E402
+(OpenAICompatibleLLMClient,) = _env.resolve("OpenAICompatibleLLMClient")   # ★ 跨世代（3.0 在 core.provider.openai_compatible）
 
 main_mod = _env.load("main")
 PASS, FAIL = [], []

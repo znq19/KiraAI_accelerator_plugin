@@ -29,7 +29,9 @@ if FW is None:
     _env.skip("需要 KiraAI 框架源码（设 KIRA_FW=/path/to/KiraAI）")
 sys.path.insert(0, FW)
 
-from core.utils import model_clients as mc                     # noqa: E402
+# ★ 跨世代：3.0 该类在 core.provider.openai_compatible
+import importlib as _il                                         # noqa: E402
+mc = _il.import_module(_env.resolve_module("model_clients"))
 from core.provider.provider_manager import ProviderManager     # noqa: E402
 from core.message_manager import MessageProcessor              # noqa: E402
 

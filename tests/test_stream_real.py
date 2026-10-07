@@ -31,7 +31,7 @@ sys.path.insert(0, FW)
 
 from core.provider.provider import ModelInfo, ModelType          # noqa: E402
 from core.provider.llm_model import LLMRequest                  # noqa: E402
-from core.utils.model_clients import OpenAICompatibleLLMClient  # noqa: E402
+(OpenAICompatibleLLMClient,) = _env.resolve("OpenAICompatibleLLMClient")   # ★ 跨世代（3.0 在 core.provider.openai_compatible）
 _se = _env.load("stream_engine")                                    # noqa: E402
 StreamEngine, LLMClientProxy = _se.StreamEngine, _se.LLMClientProxy
 

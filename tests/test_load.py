@@ -148,6 +148,9 @@ def build_stubs():
         async def chat_stream(self, request, **kw):
             yield LLMStreamChunk(delta_text="流式")
 
+    # ★ 跨世代：3.0 把该类搬到了 core.provider.openai_compatible。
+    #   注册到**当前框架真正会 import 的路径**，否则 3.0 上插件 import 不到 mock。
+    mod("core.provider.openai_compatible", OpenAICompatibleLLMClient=OpenAICompatibleLLMClient)
     mod("core.utils.model_clients", OpenAICompatibleLLMClient=OpenAICompatibleLLMClient)
     mod("core.utils")
     mod("core.utils.path_utils", get_data_path=lambda: Path("/tmp"))
@@ -197,6 +200,9 @@ def build_stubs():
         def get_handlers(self, et):
             return []
 
+    # ★ 跨世代：3.0 的模块名是 core.plugin.handlers（core_compat 优先找它）
+    mod("core.plugin.handlers",
+        event_handler_reg=EventHandlerRegistry(), EventType=EventType)
     mod("core.plugin.plugin_handlers",
         event_handler_reg=EventHandlerRegistry(), EventType=EventType)
 
