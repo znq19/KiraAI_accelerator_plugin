@@ -67,3 +67,83 @@ def skip(why: str) -> None:
 def plugin_file(*parts):
     """插件根下的文件路径，例如 plugin_file("web", "index.html")。"""
     return ROOT.joinpath(*parts)
+
+
+# --------------------------------------------------------------------------- #
+# 跨世代符号解析
+# --------------------------------------------------------------------------- #
+#: 同一个符号在两代框架里的位置。**新世代在前**。
+#:
+#: ★ 这些测试原本硬编码了 2.x 的路径 ⇒ 在 3.0 上整个测试**跑不到被测代码**
+#:   （表现为 ModuleNotFoundError，看起来像"插件坏了"，其实测试根本没执行）。
+#:   框架把模块搬了家，测试也得跟着走，否则 3.0 的回归保护是假的。
+_CROSSGEN_SYMBOLS = {
+    "event_system": (
+        ("core.plugin.handlers", "event_handler_reg", "EventType"),        # 3.0
+        ("core.plugin.plugin_handlers", "event_handler_reg", "EventType"),  # 2.x
+    ),
+    "OpenAICompatibleLLMClient": (
+        ("core.provider.openai_compatible", "OpenAICompatibleLLMClient"),   # 3.0
+        ("core.utils.model_clients", "OpenAICompatibleLLMClient"),           # 2.x
+    ),
+    "model_clients": (
+        ("core.provider.openai_compatible",),                                # 3.0
+        ("core.utils.model_clients",),                                       # 2.x
+    ),
+    "plugin_registry": (
+        ("core.plugin.registry",),                                           # 3.0
+        ("core.plugin.plugin_registry",),                                    # 2.x
+    ),
+    "PluginManager": (
+        ("core.plugin.manager", "PluginManager"),                           # 3.0
+        ("core.plugin.plugin_registry", "PluginManager"),                    # 2.x
+    ),
+    "get_obj_plugin_id": (
+        ("core.plugin.registry", "get_obj_plugin_id"),                       # 3.0
+        ("core.plugin.plugin_registry", "get_obj_plugin_id"),                # 2.x
+    ),
+}
+
+
+def resolve(symbol: str, *extra: str):
+    """按跨世代表解析符号，返回**该符号本身的元组**（可含 extra 项）。
+
+    用法::
+
+        reg, et = env.resolve("event_system")           # → (registry, EventType)
+        cls = env.resolve("OpenAICompatibleLLMClient")  # → (类,)
+
+    全部候选都拿不到时抛 ImportError（保持与直接 import 一致的失败语义）。
+    """
+    tried = []
+    for cand in _CROSSGEN_SYMBOLS[symbol]:
+        module_name, *attrs = cand
+        try:
+            module = importlib.import_module(module_name)
+        except Exception as exc:  # noqa: BLE001
+            tried.append(f"{module_name}({type(exc).__name__})")
+            continue
+        got = []
+        ok = True
+        for a in attrs:
+            v = getattr(module, a, None)
+            if v is None:
+                ok = False
+                break
+            got.append(v)
+        if ok:
+            return tuple(got)
+        tried.append(f"{module_name}(缺符号)")
+    raise ImportError(f"跨世代解析 {symbol} 失败，试过: {', '.join(tried)}")
+
+
+def resolve_module(symbol: str):
+    """返回该符号所在模块（供 `mod("core.xxx", **kw)` 这类需要模块名的场景）。"""
+    for cand in _CROSSGEN_SYMBOLS[symbol]:
+        module_name = cand[0]
+        try:
+            importlib.import_module(module_name)
+            return module_name
+        except Exception:  # noqa: BLE001
+            continue
+    return _CROSSGEN_SYMBOLS[symbol][-1][0]   # 兜底返回旧路径名

@@ -38,7 +38,9 @@ def check(name, ok, detail=""):
 async def main():
     print("=== 0) 导入真框架 + 真插件 ===")
     from fastapi import FastAPI
-    from core.plugin import plugin_registry as pr
+    # ★ 跨世代：3.0 模块名是 core.plugin.registry（PluginManager 另在 manager.py）
+    import importlib as _il2
+    pr = _il2.import_module(_env.resolve_module("plugin_registry"))
     import importlib
     mod = _env.load("main")
     check("框架导入成功", True)
@@ -52,7 +54,7 @@ async def main():
 
     # ── 1) 建实例 + 真 FastAPI app ──
     print("\n=== 1) 挂载到真 FastAPI app ===")
-    mgr = pr.PluginManager()
+    mgr = _env.resolve("PluginManager")[0]()   # ★ 跨世代：3.0 在 core.plugin.manager
     cfg = {}
     cfg_path = ROOT / "schema.json"
     try:

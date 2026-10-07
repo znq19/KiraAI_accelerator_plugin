@@ -359,6 +359,67 @@ A：把你的图（webp/jpg/png）丢进 `wallpapers/` 目录，面板里就会�
 <details>
 <summary><b>📜 更新日志</b>（点击展开）</summary>
 
+### v1.0.81
+
+**KiraAI 3.0 兼容修复：事件广播在 3.0 上失效（且每次刷 ERROR 日志）**
+
+#### 现象（用户提供的 3.0 线上日志）
+
+```
+ERROR [plugin] [accel] 广播 AFTER_XML_PARSE 失败（按未改写的内容发送）
+ModuleNotFoundError: No module named 'core.plugin.plugin_handlers'
+ERROR [plugin] [accel] 补广播 ON_MESSAGE_SENT 失败
+ModuleNotFoundError: No module named 'core.plugin.plugin_handlers'
+```
+
+每轮对话刷 4 行，且**真的坏了功能**——不只是刷屏。
+
+#### 根因：核心把事件模块**换了位置**
+
+| 世代 | 模块路径 |
+|------|----------|
+| 2.x  | `core.plugin.plugin_handlers` |
+| **3.0** | **`core.plugin.handlers`** |
+
+逐行对比两代文件：**101 行 vs 102 行**，3.0 只多了个 `ON_COMMENT` 枚举、
+内部把 `plugin_registry` 改名成 `registry` ⇒ 属**纯位置迁移**，
+`EventType` / `event_handler_reg` 符号名与语义完全一致。
+
+提速器有 **3 个广播点**（`AFTER_XML_PARSE` / `ON_MESSAGE_SENT` / `ON_TOOL_RESULT`）
+硬编码了旧路径 ⇒ 3.0 上全部抛 `ModuleNotFoundError`。
+
+#### 为什么"刷屏"其实是"功能没了"
+
+`AFTER_XML_PARSE` 是插件生态改消息的公共钩子（例如 qq-enhance 的
+「表情独立成行」就挂在这里）。广播一炸 ⇒ **挂在钩子上的功能全部静默失效**。
+这也顺带解释了用户看到的现象：**该被插件改写的内容，一个都没改写**。
+
+#### 修法（不动核心、纯优化、双世代可用）
+
+新增 `core_compat.py` 统一解析这两个符号，按
+**`core.plugin.handlers` → `core.plugin.plugin_handlers`** 顺序尝试，结果缓存；
+3 处广播点改成调用它。
+
+设计上两个关键取舍：
+
+1. **解析不出来时返回「空对象」而不是 `None`** ——
+   `ON_TOOL_RESULT` 那处广播**没有 try 保护**，给 `None` 会直接
+   `AttributeError` 炸在工具执行路径上。给空对象则三处调用点**一行都不用改**，
+   语义自动退化成「没有插件挂这个钩子」，与原本的容错语义一致。
+2. **降级时打一条 WARNING（只打一次）** —— 空对象是静默的，必须留可见信号；
+   否则将来核心再改名，会表现为「插件功能悄悄失效」而无人察觉。
+
+#### 验证（`tests/test_core_compat.py` + `tests/test_broadcast_e2e.py`）
+
+* 双世代：兼容层解析出真实事件系统，3 个事件类型都可用，缓存生效；
+* ★ **真实广播**：往真实注册表挂探针 handler，调用提速器的
+  `_broadcast_after_xml_parse`，断言 **handler 真的被调用到**（不是"路径能解析"）；
+* 降级路径：候选模块不存在时，广播**安静通过**不抛异常。
+
+2.x 全量 + 3.0 全量均通过。
+
+---
+
 ### v1.0.79
 
 **插件接管识别（修「折扇」类插件的重复发送）+ 日志降噪**

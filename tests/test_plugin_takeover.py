@@ -47,9 +47,15 @@ sys.path.insert(0, FW)
 
 from core.chat import MessageChain                             # noqa: E402
 from core.chat.message_elements import Text                    # noqa: E402
-from core.plugin.plugin_handlers import (                      # noqa: E402
-    event_handler_reg, EventType, EventHandler, Priority,
-)
+# ★ 跨世代：3.0 把该模块改名为 core.plugin.handlers —— 硬编码 2.x 路径会让
+#   本测试在 3.0 上**根本跑不到被测代码**（假失败）。用 _env 统一解析。
+_MOD = _env.resolve_module("event_system")
+import importlib as _il                                      # noqa: E402
+_m = _il.import_module(_MOD)
+event_handler_reg = _m.event_handler_reg
+EventType = _m.EventType
+EventHandler = _m.EventHandler
+Priority = _m.Priority
 
 main_mod = _env.load("main")
 es = _env.load("early_sent")                               # noqa: E402

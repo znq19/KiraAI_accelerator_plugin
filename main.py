@@ -27,6 +27,7 @@ from core.plugin import BasePlugin, logger, on, Priority, register, PluginPage, 
 from core.provider import LLMRequest, LLMResponse
 from core.chat.message_utils import KiraMessageBatchEvent
 
+from .core_compat import event_system, openai_compatible_client
 from .patches import (PatchHandle, PatchRegistry, install, breaker_for,
                       mark_side_effects)
 from .stream_engine import StreamEngine, LLMClientProxy
@@ -633,10 +634,12 @@ class AcceleratorPlugin(BasePlugin):
     # L3 接管
     # ══════════════════════════════════════════════════════════
     def _install_client_cache(self) -> None:
-        try:
-            from core.utils import model_clients as mc
-        except Exception:  # noqa: BLE001
-            logger.exception("[accel] 导入 model_clients 失败")
+        # ★ 跨世代：3.0 把该类搬到了 core.provider.openai_compatible
+        #   （原来硬编码 `from core.utils import model_clients` ⇒ 3.0 上
+        #    ImportError ⇒ **HTTP 客户端复用整个失效**，实测。）
+        client_cls = openai_compatible_client()
+        if client_cls is None:
+            logger.warning("[accel] 未找到 OpenAI 兼容客户端，跳过 HTTP 客户端复用")
             return
 
         cache = self._client_cache
@@ -665,7 +668,7 @@ class AcceleratorPlugin(BasePlugin):
             return make
 
         h = PatchHandle("reuse_http_client")
-        if install(h, mc.OpenAICompatibleLLMClient, "_build_client", factory) is not None:
+        if install(h, client_cls, "_build_client", factory) is not None:
             self.patches.add(h)
 
     # ══════════════════════════════════════════════════════════
@@ -848,7 +851,7 @@ class AcceleratorPlugin(BasePlugin):
         最坏情况是"这次没被插件改写"，而不是"消息发不出去"。
         """
         try:
-            from core.plugin.plugin_handlers import event_handler_reg, EventType
+            event_handler_reg, EventType = event_system()
             if ctx.event is None:
                 return actions
             for handler in event_handler_reg.get_handlers(EventType.AFTER_XML_PARSE):
@@ -1078,7 +1081,7 @@ class AcceleratorPlugin(BasePlugin):
 
             # ★ 补广播 ON_MESSAGE_SENT（绕过框架发送层就必须补）
             try:
-                from core.plugin.plugin_handlers import event_handler_reg, EventType
+                event_handler_reg, EventType = event_system()
                 if ctx.event is not None:
                     for handler in event_handler_reg.get_handlers(EventType.ON_MESSAGE_SENT):
                         await handler.exec_handler(ctx.event, action, result)
@@ -1171,12 +1174,15 @@ class AcceleratorPlugin(BasePlugin):
         我们不改任何配置文件，热重载即生效。
         """
         targets = []
+        # ★ 跨世代：同上，3.0 该类的路径变了
         try:
-            from core.utils import model_clients as mc
-            targets.append((mc.OpenAICompatibleLLMClient, "_build_request_kwargs",
-                            "openai"))
+            _cls = openai_compatible_client()
+            if _cls is not None:
+                targets.append((_cls, "_build_request_kwargs", "openai"))
+            else:
+                logger.warning("[accel] 未找到 OpenAI 兼容客户端，跳过该注入点")
         except Exception:  # noqa: BLE001
-            logger.exception("[accel] 导入 OpenAI 兼容客户端失败，跳过该注入点")
+            logger.exception("[accel] 解析 OpenAI 兼容客户端失败，跳过该注入点")
         try:
             from core.provider.src.deepseek.model_clients import DeepSeekLLMClient
             targets.append((DeepSeekLLMClient, "_build_request_kwargs", "deepseek"))
@@ -1367,7 +1373,7 @@ class AcceleratorPlugin(BasePlugin):
                 # ── 阶段二：按序做"不能并行"的部分（与框架逐行等价）──
                 from asyncio import wait_for, TimeoutError as AsyncTimeoutError
                 from core.agent.tool import ToolResult
-                from core.plugin.plugin_handlers import event_handler_reg, EventType
+                event_handler_reg, EventType = event_system()
                 import core.agent.func_tool_manager as _ftm
 
                 for idx, tool_call in enumerate(calls):
