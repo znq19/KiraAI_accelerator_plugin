@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import random
 import re
@@ -49,6 +50,11 @@ from .config_migrations import (
 )
 
 PLUGIN_ID = "kira_accelerator"
+
+#: 当前任务正在处理的 LLMResponse。ON_LLM_RESPONSE 与随后的 parse_xml 在同一
+#: 任务链里，ContextVar 既能精确定位本轮响应，又不会像实例变量那样串会话。
+_ACTIVE_RESP: contextvars.ContextVar = contextvars.ContextVar(
+    "kira_accelerator_active_response", default=None)
 
 #: "上次发送时刻"这张表最多记多少个会话（超出整体清空，防长期运行内存累积）
 MAX_PACING_SIDS = 512
@@ -207,7 +213,10 @@ class AcceleratorPlugin(BasePlugin):
         self._resp_by_sid: dict[str, Any] = {}      # 每个会话各自的"本轮响应"
         # 本轮抢先发送的结果（按顺序），供发送层拼回 message_results 以对齐 message_id
         self._early_results: dict[str, list] = {}
-        self._early_inflight: int = 0  # 抢发自己的投递在飞标记（3.0 按链对账时跳过拦截）
+        #: 抢发自己的投递在飞标记（3.0 按链对账时跳过拦截）。
+        #: **必须按会话分键**：实例级计数会让 A 群抢发时 B 群的链级对账也被跳过，
+        #: 叠加同文响应缓存时可稳定复现重复发送。
+        self._early_inflight_sids: dict[str, int] = {}
         # ★ 旁证台账：sid → 本轮已抢发的**段原文**列表
         #   （响应标记丢失时的兜底；存原文而不是只存个数，
         #     这样兜底时也能按内容剥离，对文本被改写同样稳健）
@@ -468,6 +477,7 @@ class AcceleratorPlugin(BasePlugin):
             pass
         self.patches.uninstall_all()
         self._proxy_cache.clear()
+        self._early_inflight_sids.clear()
         logger.info("[accel] terminate，所有接管点已还原")
 
     # ══════════════════════════════════════════════════════════
@@ -1011,24 +1021,88 @@ class AcceleratorPlugin(BasePlugin):
                 self._accel_parse_inflight = max(0, getattr(self, "_accel_parse_inflight", 1) - 1)
         return await mp._parse_xml_msg(seg, tag_set)
 
+    @on.llm_response(priority=Priority.LOW)
+    async def _remember_active_response(self, event, resp, *_):
+        """把「本任务当前响应」放进 ContextVar，供随后的 parse_xml 精确定位。
+
+        只按文本反查在两种生产情形下会拿错轮次：
+          · 重叠轮次/上一轮残留里存在相同文本；
+          · 字典中旧条目先于当前条目，旧条目台账为空 ⇒ 当前轮不剥离。
+        ContextVar 是 task-local，不会像实例变量那样串会话；只作**首选**，
+        找不到时仍回退到文本择优。
+        """
+        try:
+            _ACTIVE_RESP.set((id(self), resp))
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _active_response(self):
+        try:
+            value = _ACTIVE_RESP.get()
+            if isinstance(value, tuple) and len(value) == 2 and value[0] == id(self):
+                return value[1]
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    @staticmethod
+    def _response_segments(resp) -> list:
+        try:
+            segs = getattr(resp, "_accel_early_sent_segments", None)
+            return list(segs) if isinstance(segs, list) else []
+        except Exception:  # noqa: BLE001
+            return []
+
+    def _response_for_text(self, text: str, key: str = None):
+        """按「当前任务响应 → 指定键 → 最新同文响应」的顺序定位本轮状态。
+
+        `parse_xml` 是静态方法，签名不带 sid/event_id；因此：
+          1. ContextVar 里的当前响应最精确；
+          2. 2.x 还能拿到 event 对应的 key，先校验；
+          3. 最后才按文本反查，并**优先最新时间戳**，避免旧同文条目抢先命中。
+        """
+        want = (text or "").strip()
+        if not want:
+            return None, None
+        active = self._active_response()
+        if active is not None and (getattr(active, "text_response", "") or "").strip() == want:
+            for k, resp in list(getattr(self, "_resp_by_sid", {}).items()):
+                if resp is active:
+                    return k, active
+        if key:
+            resp = getattr(self, "_resp_by_sid", {}).get(key)
+            # 精确轮次键最可信（与旧行为一致）；兼容只带计数标记的响应桩。
+            if resp is not None:
+                return key, resp
+
+        matches = []
+        for order, (k, resp) in enumerate(list(getattr(self, "_resp_by_sid", {}).items())):
+            if (getattr(resp, "text_response", "") or "").strip() != want:
+                continue
+            try:
+                ts = float((getattr(self, "_ledger_ts", {}) or {}).get(k, 0) or 0)
+            except Exception:  # noqa: BLE001
+                ts = 0.0
+            matches.append((ts, order, k, resp))
+        if matches:
+            matches.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            return matches[0][2], matches[0][3]
+        return key, None
+
     def _turn_for_text(self, text):
         """把"框架那遍手里的响应文本"对回本轮状态 `(key, 已抢发段, 抢发结果)`。
 
         为什么必须靠文本反查：3.0 的 `parse_xml(xml_data, tag_set)` 与
         `add_message_ids(xml_data, results)` 都是**静态方法**，签名里**不带 sid/轮次**，
-        而我们要剥的恰恰是"**本轮**抢发了哪些段"。响应文本是天然可用的对应物 ——
-        `_resp_by_sid[key]` 存的就是本轮响应对象，其 `text_response` 即模型完整输出
-        （acc 刻意保持它完整，见 early_sent.py 顶部说明）。
-        匹配用去空白比较（execute.py 传给 parse_xml 的是 `text.strip()`）。
+        而我们要剥的恰恰是"**本轮**抢发了哪些段"。
+        现在首选 task-local 当前响应；缺失时才按文本反查，并选最新轮次，
+        不再让旧的同文缓存抢占本轮。
         """
-        want = (text or "").strip()
-        if not want:
+        k, resp = self._response_for_text(text)
+        if resp is None:
             return None, [], []
-        for k, resp in list(getattr(self, "_resp_by_sid", {}).items()):
-            if (getattr(resp, "text_response", "") or "").strip() == want:
-                return (k, list(self._sent_ledger.get(k) or []),
-                        list(self._early_results.get(k) or []))
-        return None, [], []
+        return (k, list(self._sent_ledger.get(k) or []) or self._response_segments(resp),
+                list(self._early_results.get(k) or []))
 
     def _parse_strip_factory(self, original):
         """包 `MessageDeliveryService.parse_xml`：解析**之前**刨掉已抢发段。
@@ -1492,7 +1566,11 @@ class AcceleratorPlugin(BasePlugin):
                 logger.debug("[accel] 取抢发链签名失败（不记签名，仅影响兜底对账）")
 
             # ── 投递本身：这一步成功即等于"已经发出去了"，后面任何失败都不改这个事实 ──
-            self._early_inflight = getattr(self, "_early_inflight", 0) + 1
+            _inflight_key = str(ctx.sid or "-")
+            _inflight_map = getattr(self, "_early_inflight_sids", None)
+            if not isinstance(_inflight_map, dict):
+                _inflight_map = self._early_inflight_sids = {}
+            _inflight_map[_inflight_key] = _inflight_map.get(_inflight_key, 0) + 1
             try:
                 # ★ v1.0.88：优先走**框架推荐且未弃用**的入口
                 #   （新版框架会把 `MessageProcessor.send_message_chain` 标弃用：
@@ -1516,7 +1594,11 @@ class AcceleratorPlugin(BasePlugin):
                 logger.exception("[accel] 抢先发送失败，本段交回框架发送（不丢内容）")
                 return delivered
             finally:
-                self._early_inflight = max(0, getattr(self, "_early_inflight", 1) - 1)
+                _left = _inflight_map.get(_inflight_key, 1) - 1
+                if _left > 0:
+                    _inflight_map[_inflight_key] = _left
+                else:
+                    _inflight_map.pop(_inflight_key, None)
             delivered = True
 
             # ── 以下都是"投递之后的杂事"，失败只告警，绝不改变 delivered ──
@@ -2036,7 +2118,8 @@ class AcceleratorPlugin(BasePlugin):
                 #   用**同一个**键。这样"重叠的两轮"各拿各的台账与响应，
                 #   不会再互相清掉/覆盖（线上重复发送的真根因，详见 `_ckey`）。
                 _k = plugin._ckey(sid_now, getattr(event, "event_id", None)) if sid_now else None
-                resp = plugin._resp_by_sid.get(_k) if _k else None
+                # 当前任务响应优先；键失配/旧同文条目时再按最新文本择优。
+                _k, resp = plugin._response_for_text(xml_data, _k)
                 n = early_sent_count(resp) if resp is not None else 0
 
                 # ★★★ 台账是**权威来源**，优先用它（不再叫"兜底"，也不再告警）。
@@ -2115,6 +2198,9 @@ class AcceleratorPlugin(BasePlugin):
                 #   ⇒ 框架按位置贴 message_id 时全部错位；详见 `_emit_segment` 处说明）。
                 #   键 `_k` 与 `_sent_ledger` / `_resp_by_sid` 完全一致 ⇒ 同键写、同键读、同键清。
                 early = plugin._early_results.pop(_k, []) if _k else []
+                # 必须在 n==0 路径之前初始化：early 非空但当前响应标记/台账取不到时，
+                # 返回结果仍会走到占位插入逻辑。
+                _drop_pos = []
                 if n > 0:
                     # ★ 用"按内容剥离"：count 是按**原始**文本数的，
                     #   而 xml_tag_fixer 这类插件可能已改写 text_response
@@ -2127,7 +2213,6 @@ class AcceleratorPlugin(BasePlugin):
                     # 1.0.92 只在 3.0 的 parse_xml 路径接入，2.x 的 send_xml_messages
                     # 仍会把残留块再发一次（群里就是「正文 @昵称 正文」）。
                     # 同时记录原块位置，返回结果时插入空占位，保证后续消息 ID 不错位。
-                    _drop_pos = []
                     if getattr(plugin, "dedupe_blocks", True):
                         try:
                             from .early_sent import drop_duplicate_blocks, dropped_positions
@@ -2254,7 +2339,10 @@ class AcceleratorPlugin(BasePlugin):
                     #   ⇒ 现在只按位置取 session/chain，其余 `*args, **kwargs` 原样转发。
                     async def send_message_chain(d_self, session=None, chain=None,
                                                  *args, **kwargs):
-                        if not getattr(self, "_early_inflight", 0):
+                        _session_key = session if isinstance(session, str) else getattr(session, "sid", None)
+                        _inflight = getattr(self, "_early_inflight_sids", {}).get(
+                            str(_session_key or "-"), 0)
+                        if not _inflight:
                             try:
                                 hit = self._consume_early_match(session, chain)
                                 if hit is not None:

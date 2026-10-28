@@ -78,6 +78,7 @@ run "★★QQ增强兼容（md/键盘/at/reply）" tests/test_strip_compat_qqenh
 run "★★内容级去重（同文块不重发）" tests/test_dedupe_blocks.py
 run "★★2.x内容去重与ID对位" tests/test_dedupe_blocks_2x.py
 run "★★3.x内容去重与ID对位" tests/test_dedupe_blocks_3x.py
+run "★★当前响应定位与会话inflight" tests/test_turn_context.py
 run "★前端审计（层级/开屏/墨渗）" tests/test_frontend_audit.py
 run "★计数保留期（30天/永久）" tests/test_stats_retention.py
 run "★计数清理安全性（不误伤）" tests/test_stats_safety.py

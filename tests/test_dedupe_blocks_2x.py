@@ -159,6 +159,28 @@ finally:
 check("映射失败时保留内容", sent == [B1, B2, C], sent)
 check("映射失败时 ID 仍按原顺序", ids == ["E1", "E2", "E3"], ids)
 
+print("\n## 7) 当前响应键漂移 + 旧同文缓存：仍要精确剥离")
+import types
+mp7 = FakeMP()
+plugin7 = main_mod.AcceleratorPlugin(Ctx(mp7), {})
+plugin7.early_send = True
+plugin7._install_early_sent_strip()
+try:
+    ev7 = Ev()
+    current = types.SimpleNamespace(text_response=B1)
+    plugin7._resp_by_sid["stale-same-text"] = types.SimpleNamespace(text_response=B1)
+    k7 = plugin7._ckey(ev7.sid, "old-turn")
+    plugin7._resp_by_sid[k7] = current
+    plugin7._sent_ledger[k7] = [B1]
+    plugin7._early_results[k7] = [Result("E1")]
+    asyncio.run(plugin7._remember_active_response(None, current))
+    ev7.event_id = "new-event-id"
+    results7 = asyncio.run(MessageProcessor.send_xml_messages(mp7, ev7, B1, object()))
+    check("键漂移且存在旧同文缓存时不重发", mp7.sent == [], mp7.sent)
+    check("当前响应仍返回已抢发结果", len(results7) == 1 and results7[0].message_id == "E1", results7)
+finally:
+    plugin7.patches.uninstall_all()
+
 print("\n" + "=" * 64)
 print(f"通过 {len(PASS)}，失败 {len(FAIL)}")
 if FAIL:

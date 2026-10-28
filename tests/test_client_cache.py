@@ -101,8 +101,9 @@ def main():
     strip_body = src[j:j + 2200]
     check("★ 不再有 _current_resp 兜底",
           'getattr(plugin, "_current_resp", None)' not in strip_body)
-    check("查不到就按「没抢发过」处理（n=0）",
-          "plugin._resp_by_sid.get(_k) if _k else None" in strip_body)
+    check("★ 当前响应优先、无实例变量兜底",
+          "plugin._response_for_text(xml_data, _k)" in strip_body
+          and 'getattr(plugin, "_current_resp", None)' not in strip_body)
 
     print("\n" + "=" * 58)
     print(f"通过 {len(PASS)}  失败 {len(FAIL)}")
