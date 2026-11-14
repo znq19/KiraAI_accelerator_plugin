@@ -46,6 +46,20 @@ def check(name, ok, detail=""):
     print(f"  {'✓' if ok else '✗'} {name}" + (f"  [{detail}]" if detail else ""))
 
 
+
+def same_fn(a, b) -> bool:
+    """两个方法对象是否指"同一个实现"。
+
+    ★ 3.2 起 `FuncToolManager.execute_tool` 被 `@deprecated` 包成了 descriptor
+      （`BoundFunctionWrapper`）：**每次 getattr 都返回新对象**，`is` 永远为 False。
+      这不是还原失败 —— 还原后 `__wrapped__` 与原来一致、且没有我们的标记。
+      所以身份检查要退一步比 `__wrapped__`。
+    """
+    if a is b:
+        return True
+    wa, wb = getattr(a, "__wrapped__", None), getattr(b, "__wrapped__", None)
+    return wa is not None and wa is wb
+
 TARGETS = [
     ("reuse_http_client", mc.OpenAICompatibleLLMClient, "_build_client"),
     ("stream_engine", ProviderManager, "get_model_client"),
@@ -69,10 +83,16 @@ for modpath, clsname, attr, label in [
         print(f"  （{label} 的 SDK 未安装，跳过该接管点）")
 
 try:
-    from core.agent.func_tool_manager import FuncToolManager
-    TARGETS.append(("parallel_tools", FuncToolManager, "execute_tool"))
+    # 3.2 起工具执行迁到 ToolExecutor.execute_tools（IMToolExecutor 继承之）；
+    # 旧路径 FuncToolManager.execute_tool 在 3.2 已成 deprecated 壳。
+    from core.agent.tool_executor import ToolExecutor
+    TARGETS.append(("parallel_tools", ToolExecutor, "execute_tools"))
 except Exception:  # noqa: BLE001
-    print("  （parallel_tools 导入失败，跳过）")
+    try:
+        from core.agent.func_tool_manager import FuncToolManager
+        TARGETS.append(("parallel_tools", FuncToolManager, "execute_tool"))
+    except Exception:  # noqa: BLE001
+        print("  （parallel_tools 导入失败，跳过）")
 
 
 def snapshot():
@@ -162,13 +182,14 @@ async def main():
     plugin._install_early_sent_strip()
     plugin._install_parallel_tools()
     after_again = snapshot()
-    same = all(before_again[k] is after_again[k] for k in before_again)
-    check("★ 二次安装不会重复包装（函数对象不变）", same)
+    same = all(same_fn(before_again[k], after_again[k]) for k in before_again)
+    check("★ 二次安装不会重复包装（函数对象不变）", same,
+          str([k[0] for k in before_again if not same_fn(before_again[k], after_again[k])]))
 
     print("\n3) terminate：全部精确还原")
     await plugin.terminate()
     final = snapshot()
-    bad = [k[0] for k in final if final[k] is not orig[k]]
+    bad = [k[0] for k in final if not same_fn(final[k], orig[k])]
     check("★★ 每个接管点都还原成**同一个函数对象**", not bad, f"未还原: {bad}")
     marks = [k[0] for k in final if getattr(final[k], "__kira_accel__", False)]
     check("★ 无任何标记残留", not marks, str(marks))
@@ -189,7 +210,7 @@ async def main():
         p2._install_parallel_tools()
         await p2.terminate()
     final2 = snapshot()
-    bad2 = [k[0] for k in final2 if final2[k] is not orig[k]]
+    bad2 = [k[0] for k in final2 if not same_fn(final2[k], orig[k])]
     check("★★ 三次热重载后依旧精确还原", not bad2, f"未还原: {bad2}")
 
     print("\n5) 别人改过的就不碰（安全边界）")
@@ -202,7 +223,7 @@ async def main():
     check("★ 卸载不会覆盖第三方后来替换的实现", getattr(cls, attr) is sentinel)
     key = (label, id(cls), attr)                   # orig 的键用 id(cls)
     setattr(cls, attr, orig[key])                  # 复原，别污染后续测试
-    check("现场已复原", getattr(cls, attr) is orig[key])
+    check("现场已复原", same_fn(getattr(cls, attr), orig[key]))
 
     print("\n6) ★ 认领：上一次 terminate 失败时，新实例必须能收拾残局")
     # 场景：A 装好补丁但 terminate 抛异常/被跳过 ⇒ 补丁留着；

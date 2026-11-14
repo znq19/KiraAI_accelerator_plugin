@@ -4,6 +4,12 @@
 
 装了 qq-enhance 后，「表情控制 → 表情独立成行」失效：表情跟着文字一起发出去。
 
+> ⚠️ 2026-11-14 补充：qq-enhance 1.4.6 起，表情控制已从 `after_xml_parse`
+> 改到 `ON_LLM_RESPONSE`（直接改写 XML）。这条测试验证的是**广播机制本身**
+> （任何仍在用 AFTER_XML_PARSE 的插件都依赖它），与表情插件当前实现无关。
+> 合并段（文字+表情同 `<msg>`）现在由 `stream_first.sticker_restructure_needed`
+> 拦在抢发之前，不再进入 `_emit_segment` —— 见 `tests/test_sticker_hold.py`。
+
 ## 根因（实测该插件的真实代码）
 
     @on.after_xml_parse(priority=Priority.HIGH)

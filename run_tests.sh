@@ -45,12 +45,15 @@ run() {
 # 顺序：先纯逻辑（快、无依赖），再需要真框架的集成测试
 run "接管护栏 patches"        tests/test_patches.py
 run "段切分 stream_first"     tests/test_stream_first.py
+run "★★表情段不抢发（防拆行失效）" tests/test_sticker_hold.py
+run "★★表情不抢发·引擎端到端" tests/test_sticker_hold_engine.py
 run "抢先发送 early_sent"     tests/test_early_sent.py
 run "流式引擎 stream_engine"  tests/test_stream_engine.py
 run "自动思考 auto_thinking"  tests/test_auto_thinking.py
 run "工具并行 parallel"       tests/test_parallel.py
 run "并行等价性 parallel_eq"  tests/test_parallel_equiv.py
 run "★★真框架漂移守卫 parallel_parity" tests/test_parallel_framework_parity.py
+run "★★3.2 执行器并行（等价+并发）" tests/test_parallel_32.py
 run "壁纸轮换 rotation"       tests/test_rotation.py
 run "插件兼容性 compat"       tests/test_compat.py
 run "装载与还原 load"         tests/test_load.py

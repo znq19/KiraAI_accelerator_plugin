@@ -385,6 +385,44 @@ A：把你的图（webp/jpg/png）丢进 `wallpapers/` 目录，面板里就会�
 <details>
 <summary><b>📜 更新日志</b>（点击展开）</summary>
 
+### v1.0.96
+
+- **修复「表情独立成行」在抢先发送下静默失效**（线上：文字和表情被塞进同一个气泡）。
+  根因是**时机**：qq-enhance / sticker-control 的表情控制挂在 `ON_LLM_RESPONSE`
+  上改写 XML（拆成「表情一条 + 正文一条」），而抢先发送发生在流式过程中、
+  比它更早 —— 模型把 `<text>` 和 `<sticker>` 写在同一个 `<msg>` 里时，
+  抢发把这个**合并形态**直接发了出去；已发出的消息收不回来，插件再拆也来不及。
+  随后按内容剥离又锚定不到原始合并段（打印「实际只剥掉 0 段」），残留块被链级
+  对账"部分消费"，两个块拿到**同一个 message_id** ⇒ 用户只看到一个合并气泡。
+- 修复：`SegmentEmitter` 遇到**结构会被 XML 层改写**的段（≥2 个 `<sticker>`，
+  或 `<sticker>` 与其它内容同段）时不再抢发，该段及之后全部交回框架 ——
+  框架在 `ON_LLM_RESPONSE` 之后再解析，拿到的就是插件改写后的消息块。
+  纯表情单条结构不变，**照常抢发**，不牺牲首字速度。
+- 新增配置项 `hold_sticker`（默认**开**）：关掉即回到旧行为 —— 合并段立刻抢发
+  （快），代价是「表情独立成行」对这类段失效。只想提速、不介意气泡合并的用户可以关。
+  **只有检测到表情控制真的开着时才生效**：qq-enhance 的「启用表情控制」打开，
+  或独立版 `sticker_control` 插件已启用；没开就不拦，不会白等。
+  检测不到（老框架没有 `plugin_mgr`）时按「开启」处理，正确性优先。
+- 新增 `tests/test_sticker_hold.py`（28 断言）：判定函数、抢发行为、分片喂入、
+  前缀段仍抢发、开关关闭、插件检测（含「插件被禁用但开关还留着 true」）；
+  `tests/test_sticker_hold_engine.py`（16 断言）：**真实 StreamEngine** 端到端
+  （合并段不抢发、纯表情照发、同一 chunk、标记只含已发段）；`run_tests.sh` 已登记。
+- 面板无需改动：配置项走 schema 驱动，`/config` 的 GET/PUT 自动带上该字段
+  （已用框架真实的 `build_fields` + `schema_to_dict` 验证）。
+- **3.2 兼容：同轮工具并行恢复可用**。3.2.0 把工具执行从
+  `FuncToolManager.execute_tool` 迁到 `ToolExecutor.execute_tools`
+  （`IMToolExecutor` 继承之），旧接管点在新版上**永远不会被调用**（静默失效）。
+  现在按世代自动选择：3.2+ 接管 `execute_tools`，≤3.1 仍用旧入口。
+  新路径与框架串行实现**逐字节等价**（结果/顺序/截断/media_refs/异常/超时/上限），
+  只把"调用工具"这一层并发；`on_tool_call` 拒绝、`on_tool_result` 停止、
+  非 IM 执行器原样交回等语义全部保留。框架未来给 `execute_tools` 加新参数时，
+  检测到 `**kwargs` 非空即**不并行、原样交回**（签名漂移防线）。
+- 测试补齐 3.2：新增 `tests/test_parallel_32.py`（10 组等价用例 + 并发计时 +
+  钩子语义 + 非 IM 直通，共 20 断言）；`test_patch_restore` 适配 3.2 的
+  descriptor 身份比较（`@deprecated` 每次 `getattr` 返回新对象）；旧的
+  `parallel_parity` 在 3.2 上改为跳过（基线已迁移，覆盖在 `test_parallel_32.py`）。
+- 版本 v1.0.95 → v1.0.96
+
 ### v1.0.95
 
 - **同轮工具并行与框架 3.1.x 对齐**：3.1.0（#383）给 `execute_tool` 加了

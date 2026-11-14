@@ -99,6 +99,18 @@
         "default": true,
         "hint": "抢先发送后，如果模型在同一响应里又写了一个与已发段内容相同、仅多 reply/at 的块，整块丢弃（只丢 quote/@ 元数据，正文/媒体不丢），避免群里出现「正文 @昵称 正文」。正文或媒体有任何差异都不会删。默认：开。"
       },
+      "hold_sticker": {
+        "type": "switch",
+        "name": "Hold sticker-bearing segments (only when sticker control is on)",
+        "default": true,
+        "hint": "If a message segment mixes <sticker> with text (or has 2+ stickers), a downstream plugin (qq-enhance / sticker-control) rewrites its XML after the stream — the early-sent shape can never be fixed. This only applies when such a plugin is detected as enabled (qq-enhance 'sticker_control_enabled', or the standalone sticker_control plugin). Then the segment and the rest of that reply are left to the framework. Turn it off to always early-send (faster, but 表情独立成行 breaks for mixed segments).",
+        "locales": {
+          "zh": {
+            "name": "含表情的合并段不抢发（仅表情控制开启时生效）",
+            "hint": "当一段 <msg> 里既有 <sticker> 又有别的内容（或一段里有 2 个以上表情）时，表情插件会在流式结束后改写 XML —— 抢发先发出去的**合并形态**收不回来，「表情独立成行」就会失效（线上：文字套在表情气泡里）。\n**只在检测到表情控制真的开着时才生效**（qq-enhance 的「启用表情控制」，或独立版 sticker_control 插件已启用）；没开表情控制就不拦，不会白等。开启后，这类段以及该轮后面的内容都交回框架，由它按改写后的消息块发送。代价：该轮从这一句起不再秒回。关掉则恢复旧行为（快，但合并段的表情不会独立成行）。"
+          }
+        }
+      },
       "providers": {
         "type": "multi_select",
         "name": "Provider allowlist (empty = all)",

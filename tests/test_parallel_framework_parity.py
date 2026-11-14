@@ -38,6 +38,15 @@ sys.path.insert(0, FW)
 # 框架的日志 handler 会写 <cwd>/data/log.log；仓库里没有 data/ 时先补上
 (HERE / "data").mkdir(exist_ok=True)
 
+# ★ 3.2 起工具执行迁到 `ToolExecutor.execute_tools`（FuncToolManager.execute_tool
+#   成了 deprecated 壳），本测试的"真框架基线"已不适用 —— 对应覆盖在
+#   tests/test_parallel_32.py（同一套 10 个等价用例 + 并发性/钩子语义）。
+try:
+    import core.agent.tool_executor  # noqa: F401
+    _env.skip("3.2 工具执行已迁到 ToolExecutor；见 tests/test_parallel_32.py")
+except ImportError:
+    pass
+
 from core.agent.func_tool_manager import FuncToolManager      # noqa: E402
 from core.agent.tool import ToolResult, ToolSet               # noqa: E402
 from core.provider.llm_model import LLMResponse               # noqa: E402

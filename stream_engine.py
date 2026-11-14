@@ -109,10 +109,13 @@ class StreamEngine:
         emit: Optional[Callable[[str], Awaitable[None]]] = None,
         prefer_envelope: bool = False,
         on_complete: Optional[Callable[[Any], None]] = None,
+        hold_sticker: bool = True,
     ):
         self.force_stream = force_stream
         self.emit = emit
         self.prefer_envelope = prefer_envelope
+        #: 结构会被下游插件改写的段（表情合并段）不抢发 —— 见 stream_first
+        self.hold_sticker = hold_sticker
         # 构造完响应后回调（供插件记录"当前响应"，发送层要用它做剥离）
         self.on_complete = on_complete
         self.stats: dict[str, Any] = {}
@@ -176,7 +179,8 @@ class StreamEngine:
         usage: dict | None = None
         saw_tool_call = False
 
-        emitter = SegmentEmitter() if (self.emit is not None and not _suppress_emit) else None
+        emitter = (SegmentEmitter(hold_sticker=self.hold_sticker)
+                   if (self.emit is not None and not _suppress_emit) else None)
         if _suppress_emit:
             logger.info(
                 "[accel] 本请求之前半途失败过（框架正在故障转移重试）⇒ "

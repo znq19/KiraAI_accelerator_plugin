@@ -34,6 +34,7 @@ from .early_sent import chain_signature as _chain_signature
 from .patches import (PatchHandle, PatchRegistry, install, breaker_for,
                       mark_side_effects)
 from .stream_engine import StreamEngine, LLMClientProxy
+from .stream_first import sticker_control_active
 from .auto_thinking import (
     AutoThinkingController,
     apply_thinking_params,
@@ -157,6 +158,11 @@ class AcceleratorPlugin(BasePlugin):
         self.early_send = bool(c_str.get("early_send", True))
         #: 内容级去重：与已发段同内容、仅多 reply/at 的残留块整块丢弃（可关）
         self.dedupe_blocks = bool(c_str.get("dedupe_blocks", True))
+        #: 「结构会被下游插件改写的段（表情合并段）不抢发」—— 关掉就回到旧行为：
+        #: 合并段立刻发（快），但 qq-enhance/sticker-control 的「表情独立成行」失效。
+        #: 注意：**只有检测到表情控制真的开着**才会生效（见 `_hold_sticker_now`）。
+        self.hold_sticker = bool(c_str.get("hold_sticker", True))
+        self._hold_logged: bool | None = None
         self.stream_providers = list(c_str.get("providers", []) or [])
 
         # 请求体兼容加固（默认开，零风险）
@@ -826,6 +832,27 @@ class AcceleratorPlugin(BasePlugin):
             logger.info("[accel] 流式引擎已安装（强制流式=%s 抢先发送=%s providers=%s）",
                         self.force_stream, self.early_send, sorted(allowed) or "ALL")
 
+    def _hold_sticker_now(self) -> bool:
+        """本次请求要不要「表情合并段不抢发」。
+
+        每次请求都重新检测（配置是热更新的 —— 用户可能在面板里刚开关表情控制）：
+          · 配置项 `hold_sticker` 关 ⇒ 永远不拦；
+          · 明确检测到表情控制**开着** ⇒ 拦（只有这时才有插件会改写 XML）；
+          · 明确没开（没装 / 开关是关的）⇒ 不拦 —— 不为不会发生的改写白等；
+          · 检测不了（老框架没有 plugin_mgr）⇒ 按配置拦（正确性优先）。
+        """
+        if not self.hold_sticker:
+            return False
+        state = sticker_control_active(getattr(self.ctx, "plugin_mgr", None))
+        hold = True if state is None else bool(state)
+        if hold != self._hold_logged:
+            self._hold_logged = hold
+            reason = ("表情控制已开启" if state
+                      else "检测不到表情控制状态，按开启处理" if state is None
+                      else "表情控制未开启")
+            logger.info("[accel] 表情合并段不抢发：%s（%s）", "开" if hold else "关", reason)
+        return hold
+
     def _make_engine(self, request=None) -> StreamEngine:
         """建一个引擎实例。request 必须传进来 —— 发送上下文挂在它身上。"""
         ctx = ctx_of(request) if request is not None else None
@@ -871,7 +898,10 @@ class AcceleratorPlugin(BasePlugin):
                     self._resp_by_sid[_k] = resp
             self._current_resp = resp                    # 仅供观测
 
-        return StreamEngine(force_stream=self.force_stream, emit=emit, on_complete=_remember)
+        # 没开抢先发送时 hold 没有意义 —— 不检测、也不打那行日志
+        hold = self._hold_sticker_now() if emit is not None else False
+        return StreamEngine(force_stream=self.force_stream, emit=emit,
+                            on_complete=_remember, hold_sticker=hold)
 
     @staticmethod
     def _has_sendable(xml_data: str) -> bool:
@@ -1862,7 +1892,24 @@ class AcceleratorPlugin(BasePlugin):
 
         ⇒ 所以并行只发生在"调用工具函数"这一层，可观测行为与串行版**完全一致**，
           区别只是"等待时间"。
+
+        ★ 2026-11-14：3.2.0 把工具执行从 `FuncToolManager.execute_tool` 迁到了
+          `ToolExecutor.execute_tools`（`IMToolExecutor` 继承之），旧接管点在 3.2 上
+          **永远不会被调用**（静默失效）。这里按世代选择接管点：
+            · 有 `core.agent.tool_executor.ToolExecutor` ⇒ 接管 `execute_tools`（3.2+）
+            · 否则 ⇒ 接管 `FuncToolManager.execute_tool`（≤3.1）
         """
+        try:
+            from core.agent.tool_executor import ToolExecutor as _ToolExecutor
+            from core.agent.im_tool_executor import IMToolExecutor as _IMToolExecutor
+        except Exception:  # noqa: BLE001
+            _ToolExecutor = None
+            _IMToolExecutor = None
+
+        if _ToolExecutor is not None and _IMToolExecutor is not None:
+            self._install_parallel_tools_executor(_ToolExecutor, _IMToolExecutor)
+            return
+
         try:
             from core.agent.func_tool_manager import FuncToolManager
             from core.provider.llm_model import LLMResponse  # noqa: F401
@@ -2008,13 +2055,189 @@ class AcceleratorPlugin(BasePlugin):
                         "role": "tool", "tool_call_id": tool_call_id,
                         "name": name, "content": content,
                     })
-            return execute_tool
+            # ★ 工具调用是**不可撤销**的副作用：实现体出错时绝不回退重跑
+            #   （否则整批工具会被执行第二遍）—— 让异常抛给上层。
+            return mark_side_effects(execute_tool)
 
         from .patches import PatchHandle, install
         h = PatchHandle("parallel_tools")
         if install(h, FuncToolManager, "execute_tool", factory) is not None:
             self.patches.add(h)
             logger.info("[accel] 同轮工具并行已安装（白名单=%s 黑名单=%d条 全字匹配=%s）",
+                        gate.whitelist or "全部", len(gate.blacklist), gate.match_exact)
+
+    def _install_parallel_tools_executor(self, ToolExecutor, IMToolExecutor) -> None:
+        """3.2+：接管 `ToolExecutor.execute_tools`（IMToolExecutor 继承自此）。
+
+        与 ≤3.1 的实现**逐行对齐**，只是把"调用工具"换成并发：
+
+          阶段一（串行、按序）：limit 告警 / 参数解析 / `on_tool_call` 钩子
+          阶段二（并发）      ：只调工具（含 timeout / 异常 → 与框架同文案）
+          阶段三（串行、按序）：`on_tool_result` 钩子 / assemble / 截断 / build_content / 写入
+
+        这样 `resp.tool_results` 的顺序、内容、钩子调用顺序都与框架串行版一致，
+        差别只有等待时间。
+        """
+        import json as _json
+
+        gate = self._tool_gate
+        plugin = self
+
+        def factory(original):
+            async def execute_tools(self, resp, tool_set=None, *, config,
+                                    on_tool_call=None, on_tool_result=None,
+                                    should_stop=None, **kwargs):
+                # 只接管 IM 执行器（带 event 的那种）；记忆整理/JEV 等后台调用原样交回
+                # ★ 未来框架加了新参数（**kwargs 非空）⇒ 不并行、原样交回，
+                #   宁可少一次提速，也不能把新语义吃掉（S7b 守卫）。
+                if kwargs or not isinstance(self, IMToolExecutor):
+                    return await original(
+                        self, resp, tool_set, config=config,
+                        on_tool_call=on_tool_call, on_tool_result=on_tool_result,
+                        should_stop=should_stop, **kwargs)
+
+                calls = getattr(resp, "tool_calls", None) or []
+                max_calls = config.max_tool_calls_per_step
+                to_run = calls[:max_calls] if max_calls >= 0 else []
+                ok, reason = gate.can_parallelize(to_run)
+                if not ok:
+                    return await original(
+                        self, resp, tool_set, config=config,
+                        on_tool_call=on_tool_call, on_tool_result=on_tool_result,
+                        should_stop=should_stop, **kwargs)
+
+                plugin._stats["parallel_batches"] = plugin._stats.get("parallel_batches", 0) + 1
+                logger.info("[accel] 同轮工具并行：%s", reason)
+
+                timeout = config.tool_call_timeout
+                max_out = config.max_tool_output_tokens
+
+                from core.agent.hook_context import ToolCallContext
+                from core.agent.tool import ToolResult
+                try:  # 3.1+ 才有；缺失时退回不截断（与旧版行为一致）
+                    from core.agent.tool import truncate_tool_output
+                except ImportError:  # pragma: no cover
+                    truncate_tool_output = None
+                import core.agent.tool_executor as _te_mod
+                import asyncio as _a
+                from asyncio import wait_for, TimeoutError as AsyncTimeoutError
+
+                # ── 阶段一：执行前逻辑，串行且按序（与框架一致）──
+                entries = []
+                for idx, tool_call in enumerate(calls):
+                    if should_stop is not None and should_stop():
+                        return
+                    fn = tool_call.get("function") or {}
+                    name = fn.get("name")
+                    tool_call_id = tool_call.get("id")
+
+                    if idx >= max_calls:
+                        entries.append({"kind": "limit", "id": tool_call_id, "name": name})
+                        continue
+
+                    raw_args = fn.get("arguments")
+                    try:
+                        if not (raw_args or "").strip():
+                            args = {}
+                        else:
+                            args = _json.loads(raw_args)
+                    except (ValueError, AttributeError) as e:
+                        _te_mod.logger.error(f"Failed to parse function calling arguments: {e}")
+                        _te_mod.logger.error(f"Raw args: {raw_args}")
+                        args = {}
+
+                    _te_mod.tool_logger.info(f"{name} args: {args}")
+                    if not (tool_set and name in tool_set):
+                        entries.append({"kind": "missing", "id": tool_call_id, "name": name})
+                        continue
+
+                    tool_inst = tool_set.get(name)
+                    call_ctx = ToolCallContext(
+                        tool_call_id=tool_call_id, tool=tool_inst, arguments=args)
+                    if on_tool_call is not None:
+                        try:
+                            await on_tool_call(call_ctx)
+                        except Exception as e:  # noqa: BLE001
+                            _te_mod.tool_logger.exception(f"Tool call hook failed for '{name}'")
+                            call_ctx.set_result(
+                                ToolResult(text=f"Tool call hook failed for '{name}': {e}"))
+                    if should_stop is not None and should_stop():
+                        return
+                    entries.append({"kind": "call", "id": tool_call_id, "name": name,
+                                    "ctx": call_ctx, "tool": tool_inst})
+
+                # ── 阶段二：并发执行（只有这一层并行）──
+                async def run_one(entry):
+                    call_ctx = entry["ctx"]
+                    name = entry["name"]
+                    # 钩子已给出结果（审批拒绝 / 直接答复）⇒ 不执行工具
+                    if call_ctx.result is not None:
+                        return call_ctx.result
+                    try:
+                        coro = self.invoke_tool(entry["tool"], call_ctx.arguments)
+                        return await (wait_for(coro, timeout) if timeout else coro)
+                    except AsyncTimeoutError:
+                        msg = f"Tool '{name}' timed out after {timeout}s"
+                        _te_mod.tool_logger.error(msg)
+                        return {"error": msg}
+                    except Exception as e:  # noqa: BLE001
+                        msg = f"Failed to call tool '{name}': {e}"
+                        _te_mod.tool_logger.error(msg)
+                        return {"error": msg}
+
+                call_entries = [e for e in entries if e["kind"] == "call"]
+                raw_results = await _a.gather(
+                    *[run_one(e) for e in call_entries], return_exceptions=False)
+                result_iter = iter(raw_results)
+
+                # ── 阶段三：后处理，串行且按序（与框架逐行等价）──
+                for entry in entries:
+                    if entry["kind"] == "limit":
+                        warn_msg = (f"Tool call limit exceeded: maximum {max_calls} "
+                                    f"tool calls per turn, skipping tool '{entry['name']}'.")
+                        _te_mod.tool_logger.warning(warn_msg)
+                        resp.tool_results.append({
+                            "role": "tool", "tool_call_id": entry["id"],
+                            "name": entry["name"],
+                            "content": (truncate_tool_output(warn_msg, max_out)
+                                        if truncate_tool_output else warn_msg),
+                        })
+                        continue
+
+                    if should_stop is not None and should_stop():
+                        return
+
+                    if entry["kind"] == "missing":
+                        result = {"error": f"Tool {entry['name']} not implemented"}
+                        _te_mod.tool_logger.error(
+                            f"Tool {entry['name']} not implemented")
+                    else:
+                        # 顺序与 call_entries 严格一致 ⇒ 结果不会串位
+                        result = next(result_iter)
+
+                    tool_result_obj = (result if isinstance(result, ToolResult)
+                                       else ToolResult(str(result)))
+
+                    if on_tool_result is not None and not await on_tool_result(tool_result_obj):
+                        return
+
+                    content = await tool_result_obj.assemble_result()
+                    if truncate_tool_output is not None:
+                        content = truncate_tool_output(content, max_out)
+                    content = tool_result_obj.build_content(content)
+                    _te_mod.tool_logger.info(f"tool_result: {content}")
+                    resp.tool_results.append({
+                        "role": "tool", "tool_call_id": entry["id"],
+                        "name": entry["name"], "content": content,
+                    })
+            # ★ 同上：工具已执行过 ⇒ 出错不回落重跑
+            return mark_side_effects(execute_tools)
+
+        from .patches import PatchHandle, install
+        h = PatchHandle("parallel_tools")
+        if install(h, ToolExecutor, "execute_tools", factory) is not None:
+            self.patches.add(h)
+            logger.info("[accel] 同轮工具并行已安装·3.2 执行器路径（白名单=%s 黑名单=%d条 全字匹配=%s）",
                         gate.whitelist or "全部", len(gate.blacklist), gate.match_exact)
 
     def _frame_delay(self) -> tuple[float, float]:
