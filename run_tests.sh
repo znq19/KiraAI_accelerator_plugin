@@ -57,6 +57,7 @@ run "★★3.2 执行器并行（等价+并发）" tests/test_parallel_32.py
 run "壁纸轮换 rotation"       tests/test_rotation.py
 run "插件兼容性 compat"       tests/test_compat.py
 run "★★插件链式共存（实例级接管/流式旁听）" tests/test_plugin_instance_chain.py
+run "★★★热升级不留旧引擎（防重复发送）" tests/test_hot_upgrade_340.py
 run "装载与还原 load"         tests/test_load.py
 run "★会话路由不串"           tests/test_session_routing.py
 run "★消息间隔"               tests/test_message_pacing.py

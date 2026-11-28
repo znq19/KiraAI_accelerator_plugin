@@ -51,6 +51,8 @@ MARK = "__kira_accel__"
 MARK_ORIGINAL = "__kira_accel_original__"
 # 标记：这个接管点**有不可撤销的副作用**（例：消息真的发出去了）
 SIDE_EFFECTS = "__kira_accel_side_effects__"
+# 标记：这个包装属于哪个插件实例（热升级后旧实例的包装必须替换，不能认领）
+MARK_OWNER = "__kira_accel_owner__"
 
 
 def mark_side_effects(fn):
@@ -81,6 +83,25 @@ def has_side_effects(fn) -> bool:
     return False
 
 
+def is_accel_wrapper(fn) -> bool:
+    """这个函数**本身**是不是本插件装上去的包装（不是"链上有"）。
+
+    ★ 为什么不只认 MARK：第三方用 `functools.wraps(我们的包装)` 时，
+      MARK / MARK_ORIGINAL 会被原样复制到它的包装上。只看 MARK 会把
+      **别人的包装**误当成我们的，热升级时甚至会把别人拆掉。
+    ★ 真包装的特征：`__wrapped__` 就是 `MARK_ORIGINAL`（_mark 与 functools.wraps
+      指向同一个 original）。复制标记的外来包装：`__wrapped__` 是"我们的包装"，
+      而 MARK_ORIGINAL 是更内层的 original ⇒ 两者不同。
+    """
+    fn = getattr(fn, "__func__", fn)
+    try:
+        if not getattr(fn, MARK, False):
+            return False
+        return getattr(fn, "__wrapped__", None) is getattr(fn, MARK_ORIGINAL, None)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def contains_mark(fn) -> bool:
     """这个函数（或它包裹的任意一层）是不是**本插件**装上去的。
 
@@ -90,6 +111,7 @@ def contains_mark(fn) -> bool:
 
     ★ 必须顺着 `__wrapped__` 走：functools.wraps 会保留它，
       而 third-party 的包装器普遍用 wraps。
+    ★ 每一层都用 is_accel_wrapper 判：第三方复制了 MARK 的包装不算。
     """
     cur, seen = fn, set()
     for _ in range(16):
@@ -97,7 +119,7 @@ def contains_mark(fn) -> bool:
             break
         seen.add(id(cur))
         try:
-            if getattr(cur, MARK, False):
+            if is_accel_wrapper(cur):
                 return True
             nxt = getattr(cur, "__wrapped__", None)
         except Exception:  # noqa: BLE001
@@ -202,34 +224,48 @@ def guard(name: str, original: Callable, impl: Callable) -> Callable:
     return _mark(swrapper, original)
 
 
-def install(handle: PatchHandle, owner: Any, attr: str, factory: Callable) -> Optional[PatchHandle]:
+def install(handle: PatchHandle, owner: Any, attr: str, factory: Callable,
+            owner_token: Any = None) -> Optional[PatchHandle]:
     """安装一个接管点。
 
     :param factory: 接收入参 `original`，返回"加速版实现"（同步/异步与原函数一致）。
-    :return: 成功返回 handle；已装过（R1 幂等）返回 None。
+    :param owner_token: 本次安装的归属（传插件实例）。同一个实例重复初始化 ⇒ 认领；
+        不同实例（热升级）⇒ **替换**，绝不认领旧实例的包装 —— 旧包装的闭包绑定的是
+        已 terminate 的对象，认领会让旧引擎/旧台账继续工作（重复发送的根因）。
+    :return: 成功返回 handle；已装过且属于同一实例（R1 幂等）返回 None。
     """
     original = getattr(owner, attr, None)
     if original is None:
         logger.warning("[accel] 接管点 %s 不存在（%s.%s），跳过", handle.name, owner, attr)
         return None
 
-    if getattr(original, MARK, False):
-        # R1 幂等：已经装过（通常是上一次实例留下的）—— 不再包第二层。
-        #
-        # ★ 但仍然**返回 handle**，让本次实例"认领"这个接管点。
-        #   为什么必须认领：框架重载时一般会先 terminate（plugin_registry.py:1900），
-        #   可万一那次 terminate 抛了异常，框架只记一条日志就继续初始化；
-        #   此时旧补丁还在，而新实例如果不认领它，就**再也没人能还原**
-        #   —— 表现为"插件已经关了，行为却还在"，且完全没有报错。
-        #
-        #   认领是安全的：uninstall() 有守卫，当前实现若不是我们装的那个就不碰。
-        logger.info("[accel] 接管点 %s 已存在，本次认领（不重复包装）", handle.name)
-        handle.owner, handle.attr = owner, attr
-        handle.installed = original
-        handle.original = getattr(original, MARK_ORIGINAL, None)
-        return handle
+    if is_accel_wrapper(original):
+        same = owner_token is None or getattr(original, MARK_OWNER, None) is owner_token
+        if same:
+            # R1 幂等：同一实例重复初始化 —— 认领，不再包第二层。
+            logger.info("[accel] 接管点 %s 已存在，本次认领（不重复包装）", handle.name)
+            handle.owner, handle.attr = owner, attr
+            handle.installed = original
+            handle.original = getattr(original, MARK_ORIGINAL, None)
+            return handle
+
+        # ★★ 不同实例（热升级）：绝不能认领。
+        #    旧包装的闭包绑定的是**已 terminate 的旧插件对象**：它的引擎还会抢先发送、
+        #    它的台账/响应缓存与新实例完全分离 ⇒ 新实例的 parse_xml 剥不到已发段
+        #    ⇒ 框架再发一次（线上："更新插件后每条都发两遍"）。
+        #    能拆就直接拆到它包的那一层，再按当前实例重新包。
+        prev = getattr(original, MARK_ORIGINAL, None)
+        if prev is not None:
+            try:
+                setattr(owner, attr, prev)
+            except Exception:  # noqa: BLE001
+                pass
+            else:
+                original = prev
+                logger.info("[accel] 接管点 %s 是旧实例留下的，已替换为当前实例", handle.name)
 
     wrapper = guard(handle.name, original, factory(original))
+    setattr(wrapper, MARK_OWNER, owner_token)
     setattr(owner, attr, wrapper)
 
     handle.owner, handle.attr = owner, attr

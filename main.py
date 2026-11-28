@@ -363,6 +363,10 @@ class AcceleratorPlugin(BasePlugin):
         #: 台账最后一次活动时间（用于清理陈旧状态，双保险）
         self._ledger_ts: dict[str, float] = {}
         self._proxy_cache: dict[tuple, LLMClientProxy] = {}
+        #: 本实例是否已经 terminate。旧包装若因"被他人覆盖"而留在类上，
+        #: 它必须变成 pass-through —— 否则热升级后旧引擎会继续抢先发送，
+        #: 而新实例的台账/解析完全不知道 ⇒ 框架再发一遍（重复消息）。
+        self._terminated = False
         # 一次性配置迁移（v1.0.78）：定时器/任务引用（防被 GC，terminate 可取消）
         self._migration_timer = None
         self._migration_task = None
@@ -543,6 +547,7 @@ class AcceleratorPlugin(BasePlugin):
             logger.exception("[accel] 配置迁移失败（忽略，下次加载重试）")
 
     async def initialize(self) -> None:
+        self._terminated = False
         logger.info(
             "[accel] initialize（观测=%s 强制流式=%s 抢先发送=%s 自动思考=%s）",
             self.observe_enabled, self.force_stream,
@@ -582,6 +587,9 @@ class AcceleratorPlugin(BasePlugin):
         self._ensure_patch_chains()
 
     async def terminate(self) -> None:
+        # ★★ 先标记"本实例已终止"：即使下面 uninstall 因"被他人覆盖"而跳过，
+        #    旧包装也会立刻变成 pass-through（不再抢先发送/对账）。
+        self._terminated = True
         # ★ 取消尚未触发的一次性迁移定时器（已触发的任务由自身守卫兜底：
         #   被替换/停用时不会再动配置）
         try:
@@ -855,6 +863,8 @@ class AcceleratorPlugin(BasePlugin):
 
         def factory(original):
             def make(self, *args, **kwargs):
+                if getattr(plugin, "_terminated", False):
+                    return original(self, *args, **kwargs)
                 # ★ v1.0.90：签名原样透传（框架给 _build_client 加参数也不炸）
                 # ★ 键必须覆盖 _build_client 真正用到的一切：
                 #   api_key / base_url / default_headers。
@@ -889,7 +899,7 @@ class AcceleratorPlugin(BasePlugin):
             return make
 
         h = PatchHandle("reuse_http_client")
-        if install(h, client_cls, "_build_client", factory) is not None:
+        if install(h, client_cls, "_build_client", factory, owner_token=self) is not None:
             self.patches.add(h)
 
     # ── 缓存客户端的显式收尾（3.4.0：所有权在插件，必须自己关）──
@@ -949,7 +959,7 @@ class AcceleratorPlugin(BasePlugin):
             return get_model_client
 
         h = PatchHandle("stream_engine")
-        if install(h, ProviderManager, "get_model_client", factory) is not None:
+        if install(h, ProviderManager, "get_model_client", factory, owner_token=self) is not None:
             self.patches.add(h)
             self._stream_patch_installed = True
             logger.info("[accel] 流式引擎已安装（强制流式=%s 抢先发送=%s providers=%s）",
@@ -969,12 +979,34 @@ class AcceleratorPlugin(BasePlugin):
         """
         if client is None:
             return None
+        # 本实例已终止（热升级/停用）：旧包装即使还挂在链上也不再包代理。
+        if getattr(self, "_terminated", False):
+            return client
         # 只包装 LLM 客户端（其它类型如 TTS/STT 无流式语义）
         if type(client).__name__.endswith("EmbeddingClient") or \
            type(client).__name__.endswith("ImageClient"):
             return client
-        # 已经是本插件的代理（实例链补丁会和类补丁重复进入）：原样返回。
+        # 已经是提速器代理：可能来自**上一个实例**（热升级时旧包装没被还原，
+        # 或旧代理还留在 event.model_group 里）。旧代理的 `_engine_factory`
+        # 绑定的是已 terminate 的旧插件 —— 必须把引擎换成当前实例的，
+        # 否则旧引擎会抢先发送、新实例解析不到台账 ⇒ 框架再发一遍（重复消息）。
         if getattr(client, "_accel_proxy", False):
+            owner = getattr(client, "_accel_owner", None)
+            if owner is not self:
+                cur_factory = getattr(client, "_engine_factory", None)
+                already = getattr(cur_factory, "__self__", None) is self
+                if not already:
+                    try:
+                        object.__setattr__(client, "_engine_factory", self._make_engine)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        object.__setattr__(client, "_accel_owner", self)
+                    except Exception:  # noqa: BLE001
+                        # 1.0.98 的代理没有 _accel_owner 槽：引擎换过就够了，
+                        # 下次靠 "__self__ is self" 判断，不会重复接管/刷日志。
+                        pass
+                    logger.info("[accel] 接管了上一个实例留下的流式代理（热升级）")
             return client
         if not hasattr(client, "chat") or not hasattr(client, "chat_stream"):
             return client
@@ -1018,6 +1050,7 @@ class AcceleratorPlugin(BasePlugin):
                 return cached
             proxy_cache.pop(key, None)
         proxy = LLMClientProxy(client, self._make_engine)
+        object.__setattr__(proxy, "_accel_owner", self)
         proxy_cache[key] = proxy
         logger.info("[accel] 已为 %s/%s 启用流式代理",
                     getattr(m0, "provider_name", "?"), getattr(m0, "model_id", "?"))
@@ -1050,7 +1083,7 @@ class AcceleratorPlugin(BasePlugin):
 
         handle = PatchHandle("stream_engine_instance")
         try:
-            if install(handle, mgr, "get_model_client", factory) is not None:
+            if install(handle, mgr, "get_model_client", factory, owner_token=self) is not None:
                 self.patches.add(handle)
                 logger.info("[accel] 流式引擎已在实例级补丁外链一层（兼容先前接管 get_model_client 的插件）")
         except Exception:  # noqa: BLE001
@@ -1081,7 +1114,7 @@ class AcceleratorPlugin(BasePlugin):
         """建一个引擎实例。request 必须传进来 —— 发送上下文挂在它身上。"""
         ctx = ctx_of(request) if request is not None else None
         emit = None
-        if self.early_send:
+        if self.early_send and not getattr(self, "_terminated", False):
             # ★★★ 必须 `return` 投递结果（2026-09-28，审计 P0 —— 一处静默的断链）：
             #   `StreamEngine` 是**按返回值**判断"这一段到底发出去没有"的
             #   （stream_engine.py: `ok = await self.emit(seg)`，`False/None` = 没投递），
@@ -1375,6 +1408,8 @@ class AcceleratorPlugin(BasePlugin):
           · 任何异常都只告警并按**原文本**解析（宁可多生成一次，也不改变发送语义）。
         """
         async def parse_xml(xml_data=None, tag_set=None, *args, **kwargs):
+            if getattr(self, "_terminated", False):
+                return await original(xml_data, tag_set, *args, **kwargs)
             if getattr(self, "_accel_parse_inflight", 0):
                 return await original(xml_data, tag_set, *args, **kwargs)
             try:
@@ -1448,6 +1483,8 @@ class AcceleratorPlugin(BasePlugin):
         （顺序 = 抢发顺序 = 文档顺序），否则模型历史里的 message_id 会整体错位。
         """
         def add_message_ids(xml_data=None, message_results=None, *args, **kwargs):
+            if getattr(self, "_terminated", False):
+                return original(xml_data, message_results, *args, **kwargs)
             # ★ v1.0.88：同样**原样透传**（框架加参数不能让这个接管点炸掉）
             ctx = self._strip_ctx.pop(xml_data, None)
             if ctx:
@@ -2022,6 +2059,8 @@ class AcceleratorPlugin(BasePlugin):
             def make_factory(kind=kind):
                 def factory(original):
                     def build(self, request, **overrides):
+                        if getattr(plugin, "_terminated", False):
+                            return original(self, request, **overrides)
                         kwargs = original(self, request, **overrides)
 
                         # ★ 请求体兼容加固：把空白 content 规范成 None
@@ -2039,7 +2078,7 @@ class AcceleratorPlugin(BasePlugin):
                 return factory
 
             h = PatchHandle("auto_thinking:%s" % kind)
-            if install(h, cls, attr, make_factory()) is not None:
+            if install(h, cls, attr, make_factory(), owner_token=self) is not None:
                 self.patches.add(h)
                 installed.append(kind)
 
@@ -2285,7 +2324,7 @@ class AcceleratorPlugin(BasePlugin):
 
         from .patches import PatchHandle, install
         h = PatchHandle("parallel_tools")
-        if install(h, FuncToolManager, "execute_tool", factory) is not None:
+        if install(h, FuncToolManager, "execute_tool", factory, owner_token=self) is not None:
             self.patches.add(h)
             logger.info("[accel] 同轮工具并行已安装（白名单=%s 黑名单=%d条 全字匹配=%s）",
                         gate.whitelist or "全部", len(gate.blacklist), gate.match_exact)
@@ -2459,7 +2498,7 @@ class AcceleratorPlugin(BasePlugin):
 
         from .patches import PatchHandle, install
         h = PatchHandle("parallel_tools")
-        if install(h, ToolExecutor, "execute_tools", factory) is not None:
+        if install(h, ToolExecutor, "execute_tools", factory, owner_token=self) is not None:
             self.patches.add(h)
             logger.info("[accel] 同轮工具并行已安装·3.2 执行器路径（白名单=%s 黑名单=%d条 全字匹配=%s）",
                         gate.whitelist or "全部", len(gate.blacklist), gate.match_exact)
@@ -2552,7 +2591,7 @@ class AcceleratorPlugin(BasePlugin):
             return _save_memory
 
         h = PatchHandle("memory_dump")
-        if install(h, SessionManager, "_save_memory", factory) is not None:
+        if install(h, SessionManager, "_save_memory", factory, owner_token=self) is not None:
             self.patches.add(h)
             logger.info("[accel] 记忆落盘已优化（去掉缩进：序列化快约 6 倍）")
 
@@ -2568,6 +2607,8 @@ class AcceleratorPlugin(BasePlugin):
         ★ 抽成独立方法：类补丁与实例链补丁共用同一份逻辑。两份实现迟早会漂移，
           而这段逻辑关系到"会不会重复发送"，不能有两份。
         """
+        if getattr(self, "_terminated", False):
+            return _DELIVERY_MISS
         _session_key = session if isinstance(session, str) else getattr(session, "sid", None)
         _inflight = getattr(self, "_early_inflight_sids", {}).get(
             str(_session_key or "-"), 0)
@@ -2636,7 +2677,7 @@ class AcceleratorPlugin(BasePlugin):
 
         handle = PatchHandle("early_sent_dedupe_delivery_instance")
         try:
-            if install(handle, service, "send_message_chain", factory) is not None:
+            if install(handle, service, "send_message_chain", factory, owner_token=self) is not None:
                 self.patches.add(handle)
                 logger.info(
                     "[accel] 发送层已在实例级补丁外链一层（兼容先前接管 send_message_chain 的插件）")
@@ -2898,7 +2939,7 @@ class AcceleratorPlugin(BasePlugin):
         h = PatchHandle("early_sent_strip")
         if hasattr(MessageProcessor, "send_xml_messages"):
             # 2.x 形态：类级包裹 send_xml_messages（按段文本剥离）
-            if install(h, MessageProcessor, "send_xml_messages", factory) is not None:
+            if install(h, MessageProcessor, "send_xml_messages", factory, owner_token=self) is not None:
                 self.patches.add(h)
                 logger.info("[accel] 发送层已接管（剥离已抢发段，避免重复发送）")
         else:
@@ -2927,7 +2968,7 @@ class AcceleratorPlugin(BasePlugin):
                     return mark_side_effects(send_message_chain)
 
                 h2 = PatchHandle("early_sent_dedupe_delivery")
-                if install(h2, dcls, "send_message_chain", delivery_factory) is not None:
+                if install(h2, dcls, "send_message_chain", delivery_factory, owner_token=self) is not None:
                     self.patches.add(h2)
                 self._delivery_patch_installed = True
                 logger.info("[accel] 发送层已接管（按链对账去重已抢发段）")
@@ -2953,11 +2994,14 @@ class AcceleratorPlugin(BasePlugin):
                         continue
                     _orig = getattr(dcls, _attr)              # staticmethod 解包后的函数
                     _hh = PatchHandle(_name)
-                    if install(_hh, dcls, _attr, _factory) is None:
+                    if install(_hh, dcls, _attr, _factory, owner_token=self) is None:
                         continue
                     setattr(dcls, _attr, staticmethod(getattr(dcls, _attr)))
                     _hh.installed = getattr(dcls, _attr)      # 还原判据 = 我们装的函数
-                    _hh.original = staticmethod(_orig)        # 还原成 staticmethod 语义
+                    # ★ 若 install() 刚把"旧实例的包装"替换掉，真正的原函数在
+                    #   _hh.original 里；继续用安装前抓到的 _orig 会把旧包装还原回去。
+                    _true_orig = _hh.original if _hh.original is not None else _orig
+                    _hh.original = staticmethod(_true_orig)   # 还原成 staticmethod 语义
                     self.patches.add(_hh)
                     logger.info("[accel] 解析层已接管（%s：已抢发段在解析前剥离）", _attr)
             else:

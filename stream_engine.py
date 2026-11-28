@@ -51,7 +51,7 @@ class LLMClientProxy:
     所以必须把 `.model` 原样透传。
     """
 
-    __slots__ = ("_wrapped", "_engine_factory", "_extra", "__weakref__")
+    __slots__ = ("_wrapped", "_engine_factory", "_extra", "_accel_owner", "__weakref__")
 
     #: 给外部插件认「这是一层代理」用（不依赖类名/模块路径）。
     _accel_proxy = True
@@ -60,6 +60,8 @@ class LLMClientProxy:
         object.__setattr__(self, "_wrapped", wrapped)
         object.__setattr__(self, "_engine_factory", engine_factory)
         object.__setattr__(self, "_extra", {})
+        #: 创建这个代理的插件实例；热升级后旧代理会被新实例"接管"（换引擎）。
+        object.__setattr__(self, "_accel_owner", None)
 
     # ★ 冒充被包裹对象的类型，让 isinstance 认账。
     #   为什么必须有：框架（以及插件）到处用 isinstance 判断客户端种类，实测 20+ 处，例如
@@ -173,6 +175,10 @@ class LLMClientProxy:
         new = LLMClientProxy(object.__getattribute__(self, "_wrapped"),
                              object.__getattribute__(self, "_engine_factory"))
         new._extra.update(object.__getattribute__(self, "_extra"))
+        try:
+            object.__setattr__(new, "_accel_owner", object.__getattribute__(self, "_accel_owner"))
+        except Exception:  # noqa: BLE001
+            pass
         return new
 
     def __deepcopy__(self, memo):

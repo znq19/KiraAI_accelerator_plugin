@@ -392,6 +392,30 @@ A：把你的图（webp/jpg/png）丢进 `wallpapers/` 目录，面板里就会�
 <details>
 <summary><b>📜 更新日志</b>（点击展开）</summary>
 
+### v1.0.99
+
+- **修复「更新插件后每条回复发两遍」**（热升级残留）。
+  现象：插件安装器在运行中的进程里热替换文件后，日志出现
+  `接管点 stream_engine 已被他人覆盖，跳过还原`；随后同一句回复发两次。
+  根因：旧实例的 `stream_engine` 包装因被别的包装覆盖而**没能还原**，
+  它的 `LLMClientProxy._engine_factory` 仍绑定**已终止的旧插件对象**；
+  新实例的 `parse_xml` 台账是空的，旧引擎却按旧台账抢先发送 ⇒ 新实例剥不到
+  ⇒ 框架再发一次。
+- 修复（三层保险）：
+  1. **补丁归属**：`install(..., owner_token=插件实例)`；同一实例重复初始化才认领，
+     不同实例留下的包装**直接替换**（不再把旧闭包认领回来）。
+  2. **旧实例直通**：`terminate()` 先置 `_terminated=True`，所有还挂在链上的
+     旧包装（流式/对账/解析/缓存/思考/工具）立刻退化为原实现。
+  3. **旧代理接管**：新实例遇到旧 `LLMClientProxy` 时把 `_engine_factory`
+     换成自己的（含已留在 `event.model_group` 里的代理）—— 旧引擎不再抢先发，
+     新实例的台账与解析重新对齐；`_accel_owner` 槽记录归属，避免重复接管。
+  另修：`parse_xml`/`add_message_ids` 的 staticmethod 还原目标改为"真正的原函数"
+  （替换旧包装后不会再把旧包装还原回去）。
+- 新增 `tests/test_hot_upgrade_340.py`（4 断言）：旧代理 + 新实例的最小现场，
+  断言旧引擎不被调用、引擎被接管、真实 `parse_xml → send_message_chain` 只投递一次；
+  `run_tests.sh` 已登记。
+- 版本 v1.0.98 → v1.0.99。
+
 ### v1.0.98
 
 - **修复 KiraAI 3.4.0 下 `APIConnectionError: Connection error.`（模型健康检查后全部不可用）**。
